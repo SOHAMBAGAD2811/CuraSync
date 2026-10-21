@@ -5,17 +5,15 @@ import {
   Cpu,
   Wifi,
   WifiOff,
-  Bell,
   Volume2,
   VolumeX,
   Package,
-  Layers,
-  Sparkles,
-  Check,
   Radio,
-  ExternalLink,
+  Check,
+  RotateCw,
 } from "lucide-react";
 import type { Database, CompartmentNumber } from "@/lib/types/database";
+import { Dispenser3DCanvas } from "@/components/dashboard/Dispenser3DCanvas";
 
 type DoseOccurrence = Database["public"]["Tables"]["dose_occurrences"]["Row"];
 type Schedule = Database["public"]["Tables"]["medication_schedules"]["Row"];
@@ -74,7 +72,7 @@ export function DispenserVisualizer({
   // Determine if any compartment is currently pending
   const pendingCompartment = [1, 2, 3].find(
     (c) => compartmentDetails[c]?.hasPendingDose
-  );
+  ) as CompartmentNumber | undefined;
 
   const buzzerActive = Boolean(pendingCompartment);
 
@@ -83,76 +81,77 @@ export function DispenserVisualizer({
     await onTriggerLidOpen(compNum);
     setTimeout(() => {
       setActiveCompOpening(null);
-    }, 1200);
+    }, 1800);
   };
 
-  // Hardware config for the 3 compartments
   const COMPARTMENT_HARDWARE: Record<
     number,
     {
       ledColorName: string;
       ledPin: string;
       reedPin: string;
-      ledActiveBg: string;
-      ledActiveGlowClass: string;
-      ledIdleBg: string;
-      accentBorder: string;
-      glowAccent: string;
-      labelColor: string;
+      ledActiveDot: string;
+      ledIdleDot: string;
+      badgeStyle: string;
+      cardBg: string;
+      cardBorder: string;
+      textAccent: string;
     }
   > = {
     1: {
       ledColorName: "Red LED",
       ledPin: "GPIO 18",
       reedPin: "GPIO 32",
-      ledActiveBg: "bg-red-500",
-      ledActiveGlowClass: "animate-led-red",
-      ledIdleBg: "bg-red-950/70 border border-red-900/40",
-      accentBorder: "border-red-500/30",
-      glowAccent: "rgba(239, 68, 68, 0.15)",
-      labelColor: "text-red-400",
+      ledActiveDot: "bg-red-500 animate-led-red",
+      ledIdleDot: "bg-red-300",
+      badgeStyle: "bg-red-50 text-red-700 border-red-200",
+      cardBg: "bg-gradient-to-br from-white to-red-50/30",
+      cardBorder: "border-red-200/80",
+      textAccent: "text-red-600",
     },
     2: {
       ledColorName: "Green LED",
       ledPin: "GPIO 19",
       reedPin: "GPIO 33",
-      ledActiveBg: "bg-emerald-500",
-      ledActiveGlowClass: "animate-led-green",
-      ledIdleBg: "bg-emerald-950/70 border border-emerald-900/40",
-      accentBorder: "border-emerald-500/30",
-      glowAccent: "rgba(16, 185, 129, 0.15)",
-      labelColor: "text-emerald-400",
+      ledActiveDot: "bg-emerald-500 animate-led-green",
+      ledIdleDot: "bg-emerald-300",
+      badgeStyle: "bg-emerald-50 text-emerald-700 border-emerald-200",
+      cardBg: "bg-gradient-to-br from-white to-emerald-50/30",
+      cardBorder: "border-emerald-200/80",
+      textAccent: "text-emerald-600",
     },
     3: {
       ledColorName: "White LED",
       ledPin: "GPIO 23",
       reedPin: "GPIO 25",
-      ledActiveBg: "bg-white",
-      ledActiveGlowClass: "animate-led-white",
-      ledIdleBg: "bg-slate-700/60 border border-slate-600/40",
-      accentBorder: "border-slate-300/40",
-      glowAccent: "rgba(255, 255, 255, 0.15)",
-      labelColor: "text-slate-200",
+      ledActiveDot: "bg-white border-2 border-slate-300 animate-led-white",
+      ledIdleDot: "bg-slate-200 border border-slate-400",
+      badgeStyle: "bg-slate-100 text-slate-700 border-slate-200",
+      cardBg: "bg-gradient-to-br from-white to-slate-50/50",
+      cardBorder: "border-slate-200",
+      textAccent: "text-slate-700",
     },
   };
 
   return (
-    <div className="relative overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 text-white shadow-xl">
-      {/* Dispenser Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-slate-800 bg-slate-900/90 backdrop-blur">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
-            <Cpu className="w-4 h-4" />
+    <div className="rounded-3xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+      {/* Header Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 sm:px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-sky-50/50 via-teal-50/30 to-white">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center flex-shrink-0 border border-sky-200">
+            <Cpu className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-              Physical Smart Dispenser Console
-              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-bold text-slate-900">
+                Interactive 3D Hardware Dispenser
+              </h3>
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">
                 ESP32 IoT
               </span>
-            </h3>
-            <p className="text-[11px] text-slate-400">
-              Reed switch sensors, multi-color LEDs & passive buzzer
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Live WebGL 3D representation &bull; Reed switch lid detection &bull; Multi-color LEDs
             </p>
           </div>
         </div>
@@ -161,83 +160,85 @@ export function DispenserVisualizer({
         <div className="flex items-center gap-2 text-xs">
           {/* Wi-Fi Heartbeat */}
           <div
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full font-medium border ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-semibold border ${
               deviceOnline
-                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                : "bg-slate-800/80 border-slate-700 text-slate-400"
+                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                : "bg-slate-100 border-slate-200 text-slate-600"
             }`}
           >
             {deviceOnline ? (
               <>
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                <Wifi className="w-3.5 h-3.5" />
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
+                <Wifi className="w-3.5 h-3.5 text-emerald-600" />
                 <span>ESP32 Synced</span>
               </>
             ) : (
               <>
-                <WifiOff className="w-3.5 h-3.5" />
+                <WifiOff className="w-3.5 h-3.5 text-slate-400" />
                 <span>ESP32 Offline</span>
               </>
             )}
           </div>
 
-          {/* Buzzer Indicator (GPIO 26) */}
+          {/* Buzzer Indicator */}
           <div
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full font-medium border ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-semibold border ${
               buzzerActive
-                ? "bg-amber-500/20 border-amber-500/40 text-amber-300 animate-pulse"
-                : "bg-slate-800 border-slate-700 text-slate-400"
+                ? "bg-amber-50 border-amber-300 text-amber-800 animate-pulse"
+                : "bg-slate-50 border-slate-200 text-slate-500"
             }`}
           >
             {buzzerActive ? (
               <>
-                <Volume2 className="w-3.5 h-3.5 text-amber-400" />
-                <span>Buzzer Beeping</span>
+                <Volume2 className="w-3.5 h-3.5 text-amber-600" />
+                <span>Buzzer Active</span>
               </>
             ) : (
               <>
-                <VolumeX className="w-3.5 h-3.5 text-slate-500" />
-                <span>Buzzer Silent</span>
+                <VolumeX className="w-3.5 h-3.5 text-slate-400" />
+                <span>Buzzer Idle</span>
               </>
             )}
           </div>
         </div>
       </div>
 
-      <div className="p-5 md:p-6 space-y-6">
-        {/* 1602 LCD Screen Emulation */}
-        <div className="rounded-2xl p-4 bg-emerald-950/80 border-2 border-emerald-800/60 shadow-inner font-mono text-emerald-300 relative overflow-hidden">
-          <div className="absolute top-2 right-3 text-[10px] tracking-widest text-emerald-500/70 uppercase">
-            1602 I2C LCD (0x27)
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-xs sm:text-sm font-bold tracking-wider">
-              <span>[RTC] {rtcTime}</span>
-              <span className="text-[11px] text-emerald-400 font-semibold">
-                {deviceOnline ? "ONLINE • SYNC OK" : "RTC STANDALONE"}
-              </span>
-            </div>
-            <div className="text-xs sm:text-sm text-emerald-200 font-semibold tracking-wide">
+      <div className="p-5 sm:p-6 space-y-6">
+        {/* Real 3D Hardware Canvas Model */}
+        <div className="relative rounded-2xl bg-gradient-to-b from-sky-50/40 via-teal-50/20 to-white border border-sky-100/80 overflow-hidden shadow-inner flex flex-col items-center justify-center">
+          <Dispenser3DCanvas
+            pendingCompartment={pendingCompartment || null}
+            activeOpening={activeCompOpening}
+            onLidClick={(compNum) => handleLidClick(compNum)}
+          />
+
+          {/* 1602 LCD Emulation bar at bottom of 3D frame */}
+          <div className="w-full px-4 py-2.5 bg-emerald-950 border-t border-emerald-900/60 font-mono text-emerald-300 text-xs flex flex-col sm:flex-row items-center justify-between gap-1 shadow-inner">
+            <span className="font-bold flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              1602 LCD (0x27): [RTC {rtcTime}]
+            </span>
+            <span className="text-emerald-200 font-semibold tracking-wide text-center sm:text-right">
               {pendingCompartment ? (
-                <span className="animate-pulse">
+                <span className="text-amber-300 animate-pulse">
                   &gt; COMPARTMENT {pendingCompartment} DOSE DUE! OPEN LID NOW
                 </span>
               ) : doses.length > 0 && !doses.some((d) => d.status === "scheduled") ? (
-                <span>&gt; ALL DOSES COMPLETED. STANDBY</span>
+                <span>&gt; ALL DOSES COMPLETED &bull; ALL CLEAR</span>
               ) : (
-                <span>&gt; CuraSync ESP32 Ready. Next sync in 5m</span>
+                <span>&gt; CuraSync ESP32 Ready &bull; Standby</span>
               )}
-            </div>
+            </span>
           </div>
         </div>
 
-        {/* 3 Physical Compartment Bays */}
+        {/* 3 Compartment Control Bays */}
         <div>
-          <div className="flex items-center justify-between mb-3 text-xs text-slate-400">
-            <span className="font-semibold text-slate-300 uppercase tracking-wider text-[11px]">
-              Physical Compartments & Reed Switches
+          <div className="flex items-center justify-between mb-3 text-xs text-slate-600 font-semibold">
+            <span className="uppercase tracking-wider text-[11px] text-slate-500">
+              Hardware Compartment Bays
             </span>
-            <span>Click &apos;Simulate Lid Open&apos; to trigger hardware sensor</span>
+            <span>Click any bay or 3D lid to trigger reed switch sensor</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -253,114 +254,112 @@ export function DispenserVisualizer({
               return (
                 <div
                   key={compNum}
-                  className={`relative rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 border ${
+                  className={`relative rounded-2xl p-4 flex flex-col justify-between transition-all duration-200 border ${
+                    hw.cardBg
+                  } ${
                     isPending
-                      ? `${hw.accentBorder} bg-slate-800/90 shadow-lg`
-                      : "border-slate-800 bg-slate-800/40 hover:bg-slate-800/60"
+                      ? "border-amber-400 shadow-md ring-2 ring-amber-400/20"
+                      : `${hw.cardBorder} hover:shadow-xs`
                   }`}
-                  style={{
-                    boxShadow: isPending ? `0 0 24px ${hw.glowAccent}` : undefined,
-                  }}
                 >
                   {/* Top: Compartment number & LED Diode */}
                   <div className="flex items-start justify-between gap-2 mb-3">
                     <div>
-                      <span className="text-xs font-semibold text-slate-400">
+                      <span className="text-xs font-semibold text-slate-500">
                         Bay #{compNum}
                       </span>
-                      <h4 className="text-base font-bold text-white">
+                      <h4 className="text-base font-extrabold text-slate-900">
                         Compartment {compNum}
                       </h4>
                     </div>
 
-                    {/* Physical LED diode simulation */}
+                    {/* LED Diode Indicator */}
                     <div className="flex flex-col items-end">
                       <div className="flex items-center gap-1.5">
                         <span
-                          className={`w-3.5 h-3.5 rounded-full inline-block transition-all duration-300 ${
-                            isPending
-                              ? `${hw.ledActiveBg} ${hw.ledActiveGlowClass}`
-                              : hw.ledIdleBg
+                          className={`w-3 h-3 rounded-full inline-block transition-all ${
+                            isPending ? hw.ledActiveDot : hw.ledIdleDot
                           }`}
-                          title={`${hw.ledColorName} on ${hw.ledPin}`}
                         />
-                        <span className={`text-xs font-semibold ${isPending ? hw.labelColor : "text-slate-500"}`}>
+                        <span
+                          className={`text-xs font-bold ${
+                            isPending ? hw.textAccent : "text-slate-500"
+                          }`}
+                        >
                           {isPending ? "LED ON" : "LED OFF"}
                         </span>
                       </div>
-                      <span className="text-[10px] text-slate-500 font-mono mt-0.5">
-                        {hw.ledColorName} ({hw.ledPin})
+                      <span className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        {hw.ledColorName} &bull; {hw.ledPin}
                       </span>
                     </div>
                   </div>
 
                   {/* Middle: Medication assigned */}
-                  <div className="my-2 p-3 rounded-xl bg-slate-900/70 border border-slate-800/80">
+                  <div className="my-2 p-3 rounded-xl bg-white/90 border border-slate-200/80 shadow-2xs">
                     {isConfigured ? (
                       <div className="space-y-1">
                         <div className="flex items-baseline justify-between gap-1">
-                          <p className="text-sm font-bold text-slate-100 truncate">
+                          <p className="text-sm font-bold text-slate-900 truncate">
                             {detail.medName}
                           </p>
                           {detail.dosage && (
-                            <span className="text-xs text-sky-400 font-medium flex-shrink-0">
+                            <span className="text-xs text-sky-700 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-100 font-semibold flex-shrink-0">
                               {detail.dosage}
                             </span>
                           )}
                         </div>
 
                         {detail.instructions && (
-                          <p className="text-[11px] text-slate-400 truncate">
+                          <p className="text-[11px] text-slate-500 truncate">
                             {detail.instructions}
                           </p>
                         )}
 
                         <div className="pt-1.5 flex items-center justify-between text-[11px]">
-                          <span className="text-slate-500">
+                          <span className="text-slate-500 font-medium">
                             {detail.scheduledTime ? `Time: ${detail.scheduledTime}` : "Daily"}
                           </span>
 
                           {isPending ? (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
                               Due Now
                             </span>
                           ) : isTaken ? (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                               <Check className="w-2.5 h-2.5" /> Taken
                             </span>
                           ) : (
-                            <span className="text-slate-400">Scheduled</span>
+                            <span className="text-slate-500">Scheduled</span>
                           )}
                         </div>
                       </div>
                     ) : (
-                      <div className="py-2 text-center text-xs text-slate-500">
-                        <Package className="w-4 h-4 mx-auto mb-1 text-slate-600" />
+                      <div className="py-2 text-center text-xs text-slate-400">
+                        <Package className="w-4 h-4 mx-auto mb-1 text-slate-400" />
                         No medication assigned
                       </div>
                     )}
                   </div>
 
                   {/* Bottom: Reed Switch & Lid Action */}
-                  <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <div className="mt-3 pt-3 border-t border-slate-200/70 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] text-slate-600 font-medium">
                       <span
                         className={`w-2 h-2 rounded-full ${
-                          isLidOpening ? "bg-amber-400 animate-ping" : "bg-slate-600"
+                          isLidOpening ? "bg-amber-500 animate-ping" : "bg-slate-400"
                         }`}
                       />
-                      <span>
-                        {isLidOpening ? "Lid Opened!" : "Lid Closed"}
-                      </span>
+                      <span>{isLidOpening ? "Lid Opened!" : "Lid Closed"}</span>
                     </div>
 
                     <button
                       onClick={() => handleLidClick(compNum)}
                       disabled={isSimulating || isLidOpening}
-                      className="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all bg-slate-700/80 hover:bg-slate-700 text-slate-200 border border-slate-600/70 hover:border-slate-500 active:scale-95 disabled:opacity-50 cursor-pointer flex items-center gap-1"
+                      className="px-3 py-1.5 rounded-xl text-xs font-bold transition-all bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 active:scale-95 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 shadow-2xs"
                       title={`Simulate reed switch on ${hw.reedPin}`}
                     >
-                      <Radio className="w-3 h-3 text-sky-400" />
+                      <Radio className="w-3 h-3 text-sky-600" />
                       <span>{isLidOpening ? "Triggering..." : "Simulate Lid Open"}</span>
                     </button>
                   </div>
@@ -371,23 +370,23 @@ export function DispenserVisualizer({
         </div>
 
         {/* Diagnostic Pinout Footnote */}
-        <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-400">
+        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
           <div className="flex flex-wrap items-center gap-3">
-            <span className="font-semibold text-slate-300">ESP32 Pinout:</span>
+            <span className="font-bold text-slate-700">ESP32 Pinout:</span>
             <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500" /> C1: GPIO 18 (Red LED) / GPIO 32 (Reed)
+              <span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> C1: GPIO 18 (Red LED) &bull; GPIO 32 (Reed)
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> C2: GPIO 19 (Green LED) / GPIO 33 (Reed)
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> C2: GPIO 19 (Green LED) &bull; GPIO 33 (Reed)
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-white" /> C3: GPIO 23 (White LED) / GPIO 25 (Reed)
+              <span className="w-2 h-2 rounded-full bg-slate-300 border border-slate-400 inline-block" /> C3: GPIO 23 (White LED) &bull; GPIO 25 (Reed)
             </span>
             <span>Buzzer: GPIO 26</span>
           </div>
 
           {lastHeartbeat && (
-            <span className="text-slate-500">
+            <span className="text-slate-400">
               Last Ping: {new Date(lastHeartbeat).toLocaleTimeString()}
             </span>
           )}
