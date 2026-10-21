@@ -95,7 +95,7 @@ export default function DevicePage() {
   const handleSimulateHeartbeat = async () => {
     if (!device) return;
     setSimulating(true);
-    setSimStatus("Sending heartbeat...");
+    setSimStatus("Sending device connection ping...");
 
     try {
       const res = await fetch("/api/device/heartbeat", {
@@ -105,7 +105,7 @@ export default function DevicePage() {
       });
       const data = await res.json();
       if (data.success) {
-        setSimStatus("Heartbeat acknowledged! Device is now Online.");
+        setSimStatus("Connection ping acknowledged! Device is now Online.");
       } else {
         setSimStatus(`Error: ${data.error}`);
       }
@@ -208,7 +208,7 @@ export default function DevicePage() {
                   <p className="text-[11px] text-slate-400 mt-1">
                     {device?.last_heartbeat_at
                       ? `Last seen: ${new Date(device.last_heartbeat_at).toLocaleString()}`
-                      : "No heartbeat received yet."}
+                      : "No connection ping received yet."}
                   </p>
                 </div>
               </div>
@@ -270,7 +270,7 @@ export default function DevicePage() {
                 disabled={simulating}
                 className="px-3.5 py-2 bg-sky-500 hover:bg-sky-600 text-xs font-semibold rounded-xl text-white transition-all disabled:opacity-50"
               >
-                Send Heartbeat
+                Send Connection Ping
               </button>
               <button
                 onClick={() => handleSimulateCompartmentOpen(1)}
@@ -333,7 +333,7 @@ export default function DevicePage() {
                       <span className="font-semibold text-slate-800">
                         {e.event_type === "compartment_open"
                           ? `Compartment ${e.compartment_number} Opened (Reed Switch Triggered)`
-                          : "Heartbeat Sync"}
+                          : "Device Connection Ping / Keepalive"}
                       </span>
                     </div>
                     <span className="text-slate-400">

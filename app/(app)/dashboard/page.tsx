@@ -375,8 +375,8 @@ export default function DashboardPage() {
             </div>
             <p className="text-xs text-slate-500">
               {deviceOnline
-                ? `Active & synchronized (last heartbeat: ${new Date(lastHeartbeat!).toLocaleTimeString()})`
-                : "No recent heartbeat received from physical device."}
+                ? `Active & synchronized (last connected: ${new Date(lastHeartbeat!).toLocaleTimeString()})`
+                : "No recent connection ping received from physical device."}
             </p>
           </div>
 

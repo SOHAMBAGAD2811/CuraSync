@@ -41,7 +41,7 @@ CuraSync is an end-to-end healthcare platform designed to improve medication adh
 - **Physical Device**: Supports ESP32 with DS3231 RTC, 3 reed switches (magnetic compartment sensors), passive buzzer, LEDs, and 1602 LCD.
 - **Offline Reliability**: Local RTC and firmware logic ensure scheduled buzzers and LED reminders fire on time even during home Wi-Fi or internet outages.
 - **Automatic Cloud Sync**: Once Wi-Fi reconnects, compartment-opening events synchronize with the cloud backend to mark doses taken.
-- **Embedded Test Console**: Includes an in-browser Hardware Simulator to test heartbeats and compartment sensor events without needing the physical board connected.
+- **Embedded Test Console**: Includes an in-browser Hardware Simulator to test connectivity pings and compartment sensor events without needing the physical board connected.
 
 ### 📱 Progressive Web App (PWA)
 - Fully responsive light-theme medical dashboard.
@@ -123,7 +123,7 @@ The PostgreSQL schema contains 14 tables secured with Row Level Security (RLS):
 - `medications` — Active and archived prescriptions.
 - `medication_schedules` — Timetable mapped to compartments 1, 2, or 3.
 - `dose_occurrences` — Individual due doses and acknowledgement states.
-- `device_events` — Sensor activations, reed switch logs, and heartbeats.
+- `device_events` — Sensor activations, reed switch logs, and device connection pings.
 - `notifications` — Real-time dose alerts and system notices.
 - `sos_alerts` — Emergency SOS events and resolution status.
 - `vital_signs` — Blood pressure, glucose, heart rate, SpO2, and weight logs.
@@ -184,12 +184,13 @@ Open [http://localhost:3000](http://localhost:3000) to access CuraSync.
 
 All device endpoints authenticate using the unique `device_key` displayed on the **Device** page:
 
-1. **Heartbeat Sync**:
+1. **Device Connection Ping / Keepalive**:
    ```http
    POST /api/device/heartbeat
    Headers: { "x-device-key": "your-device-key" }
    Body: { "status": "OK" }
    ```
+   *(Note: This is a standard network connectivity keepalive ping so the dashboard knows the ESP32 is powered on and connected over Wi-Fi. It is not related to any biological pulse sensor).*
 
 2. **Retrieve Schedules**:
    ```http
