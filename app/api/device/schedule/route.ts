@@ -49,7 +49,31 @@ export async function GET(req: NextRequest) {
     }
 
     // 3. Format response specifically for ESP32 firmware
-    // The ESP32 parses compartments 1, 2, 3 with hour, minute, days of week
+    // Flattened alarms array for easy parsing in Arduino C++
+    const alarms = [1, 2, 3].map((compNum) => {
+      const match = (schedules || []).find(
+        (s) => s.compartment_number === compNum
+      );
+      if (match) {
+        const parts = match.scheduled_time.split(":");
+        const med = match.medications as unknown as { name: string } | null;
+        return {
+          compartment: compNum,
+          hour: parseInt(parts[0], 10),
+          minute: parseInt(parts[1], 10),
+          active: true,
+          name: med?.name || "Medication",
+        };
+      }
+      return {
+        compartment: compNum,
+        hour: -1,
+        minute: -1,
+        active: false,
+        name: "Empty",
+      };
+    });
+
     const compartments = [1, 2, 3].map((compNum) => {
       const compSchedules = (schedules || []).filter(
         (s) => s.compartment_number === compNum
@@ -57,7 +81,10 @@ export async function GET(req: NextRequest) {
       return {
         compartment: compNum,
         schedules: compSchedules.map((s) => {
-          const med = s.medications as unknown as { name: string; dosage: string | null } | null;
+          const med = s.medications as unknown as {
+            name: string;
+            dosage: string | null;
+          } | null;
           return {
             schedule_id: s.id,
             medicine_name: med?.name || "Medication",
@@ -73,6 +100,7 @@ export async function GET(req: NextRequest) {
       success: true,
       patient_id: device.patient_id,
       sync_time: new Date().toISOString(),
+      alarms,
       compartments,
     });
   } catch (err: unknown) {
