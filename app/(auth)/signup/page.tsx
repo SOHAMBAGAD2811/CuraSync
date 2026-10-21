@@ -25,6 +25,11 @@ export default function SignupPage() {
     setSuccessMsg(null);
 
     try {
+      const redirectUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/dashboard`
+          : "https://curasync-iot.vercel.app/dashboard";
+
       const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
         password,
@@ -32,6 +37,7 @@ export default function SignupPage() {
           data: {
             full_name: name.trim(),
           },
+          emailRedirectTo: redirectUrl,
         },
       });
 
