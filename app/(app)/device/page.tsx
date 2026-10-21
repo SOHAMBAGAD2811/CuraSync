@@ -268,30 +268,33 @@ export default function DevicePage() {
               <button
                 onClick={handleSimulateHeartbeat}
                 disabled={simulating}
-                className="px-3.5 py-2 bg-sky-500 hover:bg-sky-600 text-xs font-semibold rounded-xl text-white transition-all disabled:opacity-50"
+                className="px-3.5 py-2 bg-sky-500 hover:bg-sky-600 text-xs font-semibold rounded-xl text-white transition-all disabled:opacity-50 cursor-pointer shadow-xs"
               >
                 Send Connection Ping
               </button>
               <button
                 onClick={() => handleSimulateCompartmentOpen(1)}
                 disabled={simulating}
-                className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-semibold rounded-xl text-white transition-all disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-red-500/40 text-xs font-semibold rounded-xl text-slate-100 transition-all disabled:opacity-50 cursor-pointer shadow-xs"
               >
-                Open Compartment 1
+                <span className="w-2 h-2 rounded-full bg-red-500" />
+                <span>Open C1 (Red LED)</span>
               </button>
               <button
                 onClick={() => handleSimulateCompartmentOpen(2)}
                 disabled={simulating}
-                className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-semibold rounded-xl text-white transition-all disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-emerald-500/40 text-xs font-semibold rounded-xl text-slate-100 transition-all disabled:opacity-50 cursor-pointer shadow-xs"
               >
-                Open Compartment 2
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span>Open C2 (Green LED)</span>
               </button>
               <button
                 onClick={() => handleSimulateCompartmentOpen(3)}
                 disabled={simulating}
-                className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-semibold rounded-xl text-white transition-all disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-300/40 text-xs font-semibold rounded-xl text-slate-100 transition-all disabled:opacity-50 cursor-pointer shadow-xs"
               >
-                Open Compartment 3
+                <span className="w-2 h-2 rounded-full bg-white" />
+                <span>Open C3 (White LED)</span>
               </button>
             </div>
 

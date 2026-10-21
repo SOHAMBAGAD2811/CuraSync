@@ -236,8 +236,23 @@ export default function MedicinesPage() {
                       </span>
                     )}
                     {sched && (
-                      <span className="text-xs bg-sky-100 text-sky-800 font-semibold px-2.5 py-0.5 rounded-full">
-                        Compartment {sched.compartment_number}
+                      <span className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-800 font-semibold px-2.5 py-0.5 rounded-full border border-slate-200">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            sched.compartment_number === 1
+                              ? "bg-red-500"
+                              : sched.compartment_number === 2
+                              ? "bg-emerald-500"
+                              : "bg-slate-400 border border-slate-600"
+                          }`}
+                        />
+                        Compartment {sched.compartment_number} (
+                        {sched.compartment_number === 1
+                          ? "Red LED"
+                          : sched.compartment_number === 2
+                          ? "Green LED"
+                          : "White LED"}
+                        )
                       </span>
                     )}
                     {!med.is_active && (
@@ -348,9 +363,9 @@ export default function MedicinesPage() {
                     }
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-sky-500 bg-white"
                   >
-                    <option value={1}>Compartment 1</option>
-                    <option value={2}>Compartment 2</option>
-                    <option value={3}>Compartment 3</option>
+                    <option value={1}>Compartment 1 (Red LED • GPIO 18)</option>
+                    <option value={2}>Compartment 2 (Green LED • GPIO 19)</option>
+                    <option value={3}>Compartment 3 (White LED • GPIO 23)</option>
                   </select>
                 </div>
               </div>

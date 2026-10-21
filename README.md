@@ -39,6 +39,15 @@ CuraSync is an end-to-end healthcare platform designed to improve medication adh
 
 ### 🔌 ESP32 Hardware Reminder Integration
 - **Physical Device**: Supports ESP32 with DS3231 RTC, 3 reed switches (magnetic compartment sensors), passive buzzer, LEDs, and 1602 LCD.
+- **True-to-Hardware Multi-Color LED Guidance**:
+  - **Compartment 1**: **Red LED** (GPIO 18) • Reed Switch (GPIO 32)
+  - **Compartment 2**: **Green LED** (GPIO 19) • Reed Switch (GPIO 33)
+  - **Compartment 3**: **White LED** (GPIO 23) • Reed Switch (GPIO 25)
+  - **Passive Buzzer**: GPIO 26
+  - **1602 I2C LCD**: SDA GPIO 21, SCL GPIO 22 (Address: `0x27`)
+- **Next Dose Hero Spotlight**: Prominent top-of-dashboard card showing the immediate upcoming or overdue dose, instructions, and which physical compartment & glowing LED to look for on your dispenser.
+- **Interactive Dispenser Console**: Realistic 2D hardware visualizer on the dashboard with a simulated 1602 LCD display, live RTC clock, pulsating LED diode animations, and interactive reed switch lid triggers.
+- **Filterable Medication Timeline**: Filter daily doses by **All**, **Upcoming & Due**, **Taken**, and **Missed**.
 - **Offline Reliability**: Local RTC and firmware logic ensure scheduled buzzers and LED reminders fire on time even during home Wi-Fi or internet outages.
 - **Automatic Cloud Sync**: Once Wi-Fi reconnects, compartment-opening events synchronize with the cloud backend to mark doses taken.
 - **Embedded Test Console**: Includes an in-browser Hardware Simulator to test connectivity pings and compartment sensor events without needing the physical board connected.
@@ -93,10 +102,13 @@ curasync/
 │   ├── layout.tsx                  # Root layout with metadata & AuthProvider
 │   └── page.tsx                    # Route redirect to /dashboard
 ├── components/
-│   ├── dashboard/                  # Dashboard widgets & charts
+│   ├── dashboard/                  # NextDoseHero, DispenserVisualizer, charts & widgets
 │   ├── layout/                     # Sidebar & Mobile Navigation
 │   ├── providers/                  # React AuthProvider & User Context
 │   └── ui/                         # Reusable UI primitives
+├── firmware/
+│   └── esp32_curasync/
+│       └── esp32_curasync.ino      # ESP32 firmware with RTC, LCD, reed switches & LEDs
 ├── lib/
 │   ├── doses.ts                    # Dose generation & adherence calculation logic
 │   ├── supabase/                   # Supabase browser, server, and proxy clients

@@ -2,7 +2,7 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #111827;
 }
 
 @theme inline {
@@ -12,15 +12,77 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  color-scheme: light;
 }
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #e5e7eb;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #d1d5db;
+}
+
+/* CuraSync Hardware LED Glow Animations */
+@keyframes led-pulse-red {
+  0%, 100% {
+    box-shadow: 0 0 6px 2px rgba(239, 68, 68, 0.7), 0 0 16px 4px rgba(239, 68, 68, 0.35);
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 16px 6px rgba(239, 68, 68, 0.95), 0 0 32px 10px rgba(239, 68, 68, 0.55);
+    transform: scale(1.08);
+    opacity: 0.9;
+  }
+}
+
+@keyframes led-pulse-green {
+  0%, 100% {
+    box-shadow: 0 0 6px 2px rgba(34, 197, 94, 0.7), 0 0 16px 4px rgba(34, 197, 94, 0.35);
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 16px 6px rgba(34, 197, 94, 0.95), 0 0 32px 10px rgba(34, 197, 94, 0.55);
+    transform: scale(1.08);
+    opacity: 0.9;
+  }
+}
+
+@keyframes led-pulse-white {
+  0%, 100% {
+    box-shadow: 0 0 6px 2px rgba(255, 255, 255, 0.8), 0 0 18px 4px rgba(226, 232, 240, 0.5);
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 18px 7px rgba(255, 255, 255, 1), 0 0 36px 12px rgba(241, 245, 249, 0.85);
+    transform: scale(1.08);
+    opacity: 0.95;
+  }
+}
+
+.animate-led-red {
+  animation: led-pulse-red 1.2s ease-in-out infinite;
+}
+
+.animate-led-green {
+  animation: led-pulse-green 1.2s ease-in-out infinite;
+}
+
+.animate-led-white {
+  animation: led-pulse-white 1.2s ease-in-out infinite;
+}
+

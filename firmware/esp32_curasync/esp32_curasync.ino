@@ -26,14 +26,14 @@
 // =============================================================
 // USER CONFIGURATION (Fill with your credentials)
 // =============================================================
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID     = "Pande-2.4G";
+const char* WIFI_PASSWORD = "Ishaan@11";
 
 // Use your computer's local LAN IP (e.g., http://192.168.1.15:3000) or production URL
 const char* SERVER_URL    = "http://192.168.1.100:3000";
 
 // Copy your Device Key from the CuraSync web app (/device page)
-const char* DEVICE_KEY    = "YOUR_DEVICE_KEY_HERE";
+const char* DEVICE_KEY    = "cs_dev_aralnk0g_mvhwiq49";
 // =============================================================
 
 RTC_DS3231 rtc;

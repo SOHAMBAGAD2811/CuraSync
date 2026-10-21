@@ -55,3 +55,8 @@ next-env.d.ts
 
 # local scratch & agent logs
 .gemini/
+
+# document drafts & local sample papers
+*.docx
+*.pdf
+

@@ -137,9 +137,26 @@ export default function SchedulePage() {
                         <p className="text-sm font-medium text-slate-900">
                           {item.medication?.name || "Medication"}
                         </p>
-                        <p className="text-xs text-slate-500">
-                          Compartment {item.compartment_number}{" "}
-                          {item.medication?.dosage ? `· ${item.medication.dosage}` : ""}
+                        <p className="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              item.compartment_number === 1
+                                ? "bg-red-500"
+                                : item.compartment_number === 2
+                                ? "bg-emerald-500"
+                                : "bg-slate-400 border border-slate-500"
+                            }`}
+                          />
+                          <span>
+                            Compartment {item.compartment_number} (
+                            {item.compartment_number === 1
+                              ? "Red LED"
+                              : item.compartment_number === 2
+                              ? "Green LED"
+                              : "White LED"}
+                            )
+                          </span>
+                          {item.medication?.dosage ? ` · ${item.medication.dosage}` : ""}
                         </p>
                       </td>
                       <td className="px-3 py-3.5 text-xs font-semibold text-slate-700 whitespace-nowrap">
