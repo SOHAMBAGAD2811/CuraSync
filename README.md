@@ -224,14 +224,17 @@ All device endpoints authenticate using the unique `device_key` displayed on the
 
 ---
 
-## 🧪 Production Build
+## 🧪 Production Build & Vercel Deployment
 
-To verify and generate an optimized production bundle:
+To verify and generate an optimized production bundle locally:
 
 ```bash
 npm run build
 npm start
 ```
+
+For full instructions on deploying to **Vercel** and configuring the ESP32 firmware for HTTPS, see [`DEPLOYMENT.md`](DEPLOYMENT.md).
+
 
 ---
 
