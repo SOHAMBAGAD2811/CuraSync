@@ -81,6 +81,7 @@ bool previousOpen[3]     = {false, false, false};
 
 bool buzzerActive = false;
 unsigned long buzzerStart = 0;
+unsigned long buzzerDurationTarget = BUZZER_DURATION;
 unsigned long lastReminder[3] = {0, 0, 0};
 
 int lastAlarmDay[3]   = {-1, -1, -1};
@@ -109,30 +110,52 @@ char customLine1[17] = "";
 char customLine2[17] = "";
 
 // -------------------------------------------------------------
-// BUZZER DRIVER FUNCTIONS (Universal Passive & Active support)
+// BUZZER DRIVER FUNCTIONS (Universal High-Volume Acoustic Modulation)
 // -------------------------------------------------------------
 void soundBuzzerOn() {
   if (IS_ACTIVE_BUZZER) {
     digitalWrite(buzzerPin, HIGH);
   } else {
-    // 2400 Hz resonant frequency works loud and clear on passive buzzers
-    tone(buzzerPin, 2400);
+    // 2730 Hz is peak mechanical resonance of 12mm piezos
+    tone(buzzerPin, 2730);
   }
 }
 
 void soundBuzzerOff() {
+  noTone(buzzerPin);
+  digitalWrite(buzzerPin, LOW);
+}
+
+// High-Volume Siren Modulator:
+// Uses resonant frequency alternating dual-tone (2730 Hz <-> 3300 Hz)
+// which produces maximum sound pressure level (SPL) and cuts through noise!
+void updateBuzzerSound() {
+  if (!buzzerActive) return;
+
   if (IS_ACTIVE_BUZZER) {
-    digitalWrite(buzzerPin, LOW);
+    // Active Buzzer: Urgent pulsed DC (140ms ON, 60ms OFF)
+    unsigned long cycle = millis() % 200;
+    if (cycle < 140) {
+      digitalWrite(buzzerPin, HIGH);
+    } else {
+      digitalWrite(buzzerPin, LOW);
+    }
   } else {
-    noTone(buzzerPin);
-    digitalWrite(buzzerPin, LOW);
+    // Passive Buzzer: Alternating dual-tone at piezo's mechanical resonance peak
+    unsigned long cycle = (millis() / 90) % 2;
+    if (cycle == 0) {
+      tone(buzzerPin, 2730);
+    } else {
+      tone(buzzerPin, 3300);
+    }
   }
 }
 
 void startBuzzer(int compartment) {
-  soundBuzzerOn();
   buzzerActive = true;
   buzzerStart = millis();
+  buzzerDurationTarget = BUZZER_DURATION;
+  updateBuzzerSound();
   if (compartment >= 0 && compartment < 3) {
     lastReminder[compartment] = millis();
     buzzerCompartment = compartment;
@@ -397,9 +420,10 @@ void sendKeepalivePing() {
 
       // Trigger buzzer if requested
       if (ringBuzzer) {
-        soundBuzzerOn();
         buzzerActive = true;
         buzzerStart = millis();
+        buzzerDurationTarget = customMessageDuration;
+        updateBuzzerSound();
       }
     }
   } else {
@@ -453,11 +477,19 @@ void setup() {
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
 
-  // Quick startup buzzer chirp self-test (150ms)
+  // Quick startup buzzer chirp self-test (dual-tone)
   Serial.println("[CuraSync] Buzzer self-test chirp...");
-  soundBuzzerOn();
-  delay(150);
-  soundBuzzerOff();
+  if (IS_ACTIVE_BUZZER) {
+    digitalWrite(buzzerPin, HIGH);
+    delay(200);
+    digitalWrite(buzzerPin, LOW);
+  } else {
+    tone(buzzerPin, 2730);
+    delay(120);
+    tone(buzzerPin, 3300);
+    delay(120);
+    soundBuzzerOff();
+  }
 
   // Initialize LCD display
   lcd.init();
@@ -576,9 +608,13 @@ void loop() {
     digitalWrite(ledPins[i], pending[i] ? HIGH : LOW);
   }
 
-  // 2. Manage Buzzer Duration
-  if (buzzerActive && currentMillis - buzzerStart >= BUZZER_DURATION) {
-    stopBuzzer();
+  // 2. Manage Buzzer Duration & High-Volume Siren Modulation
+  if (buzzerActive) {
+    if (currentMillis - buzzerStart >= buzzerDurationTarget) {
+      stopBuzzer();
+    } else {
+      updateBuzzerSound();
+    }
   }
 
   // 3. Manage Recurring Buzz Reminders
