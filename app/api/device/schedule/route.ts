@@ -48,8 +48,8 @@ export async function GET(req: NextRequest) {
     // 3. Format response specifically for ESP32 firmware
     // Flattened alarms array for easy parsing in Arduino C++
     const alarms = [1, 2, 3].map((compNum) => {
-      const match = (schedules || []).find(
-        (s) => s.compartment_number === compNum
+      const match = ((schedules as any[]) || []).find(
+        (s: any) => s.compartment_number === compNum
       );
       if (match) {
         const parts = match.scheduled_time.split(":");
@@ -72,12 +72,12 @@ export async function GET(req: NextRequest) {
     });
 
     const compartments = [1, 2, 3].map((compNum) => {
-      const compSchedules = (schedules || []).filter(
-        (s) => s.compartment_number === compNum
+      const compSchedules = ((schedules as any[]) || []).filter(
+        (s: any) => s.compartment_number === compNum
       );
       return {
         compartment: compNum,
-        schedules: compSchedules.map((s) => {
+        schedules: compSchedules.map((s: any) => {
           const med = s.medications as unknown as {
             name: string;
             dosage: string | null;

@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
         .eq("is_active", true);
 
       if (schedules && schedules.length > 0) {
-        const scheduleIds = schedules.map((s) => s.id);
+        const scheduleIds = (schedules as any[]).map((s: any) => s.id);
 
         // Find earliest pending or scheduled dose occurrence for today
         const { data: pendingDoses } = await supabase
