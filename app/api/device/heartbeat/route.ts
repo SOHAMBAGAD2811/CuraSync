@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/types/database";
+import { getDeviceSupabaseClient } from "@/lib/supabase/device";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const deviceKey = req.headers.get("x-device-key") || body.device_key;
 
     if (!deviceKey) {
@@ -14,12 +13,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-    const supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+    const { client: supabase } = await getDeviceSupabaseClient();
 
     // 1. Verify device exists
     const { data: device, error } = await supabase
@@ -30,7 +24,10 @@ export async function POST(req: NextRequest) {
 
     if (error || !device) {
       return NextResponse.json(
-        { error: "Unauthorized: Invalid device key" },
+        {
+          error: "Unauthorized: Invalid device key",
+          hint: error?.message || "Check device key or configure valid SUPABASE_SERVICE_ROLE_KEY",
+        },
         { status: 401 }
       );
     }

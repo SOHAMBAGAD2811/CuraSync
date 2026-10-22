@@ -448,11 +448,11 @@ export function Dispenser3DCanvas({
 
     // 9. 60 FPS Render Loop
     let animId: number;
-    let clock = new THREE.Clock();
+    const startTime = performance.now();
 
     const animate = () => {
       animId = requestAnimationFrame(animate);
-      const elapsed = clock.getElapsedTime();
+      const elapsed = (performance.now() - startTime) * 0.001;
 
       // Smooth camera interpolation for view presets
       camera.position.x += (targetCamPos.current.x - camera.position.x) * 0.08;
