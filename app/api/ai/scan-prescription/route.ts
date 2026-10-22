@@ -1,9 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  checkRateLimit,
+  getClientIp,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  handleGeminiError,
+  RATE_LIMIT_PROFILES,
+} from "@/lib/ratelimit";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 export async function POST(req: NextRequest) {
+  // 1. Enforce Gemini Vision rate limiting per IP (6 requests / min)
+  const clientIp = getClientIp(req);
+  const rateLimit = checkRateLimit(clientIp, RATE_LIMIT_PROFILES.GEMINI_VISION);
+
+  if (!rateLimit.success) {
+    return createRateLimitResponse(
+      rateLimit,
+      `Prescription scanner rate limit reached. Please wait ${rateLimit.retryAfterSec} seconds before scanning another image.`
+    );
+  }
+
   try {
     const body = await req.json();
     const { imageData, mimeType } = body; // imageData: base64 string
@@ -19,7 +38,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const prompt = `You are a medical prescription parser for CuraSync, a smart pill dispenser app. 
 Analyze this image (which may be a doctor's prescription slip, a medicine box, or a medicine label) and extract the medication information.
@@ -64,7 +83,6 @@ Rules:
     // Parse JSON from response
     let parsed;
     try {
-      // Remove potential markdown code blocks
       const clean = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       parsed = JSON.parse(clean);
     } catch {
@@ -74,12 +92,12 @@ Rules:
       );
     }
 
-    return NextResponse.json({ success: true, data: parsed });
+    return NextResponse.json(
+      { success: true, data: parsed },
+      { headers: getRateLimitHeaders(rateLimit) }
+    );
   } catch (error: any) {
     console.error("Prescription scan error:", error);
-    return NextResponse.json(
-      { error: error?.message || "Failed to process image" },
-      { status: 500 }
-    );
+    return handleGeminiError(error, "Failed to process prescription image");
   }
 }

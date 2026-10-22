@@ -114,10 +114,12 @@ export function DrugInteractionShield({ medicines }: Props) {
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [lastCheckedMeds, setLastCheckedMeds] = useState<string>("");
+  const [rateLimitError, setRateLimitError] = useState<string | null>(null);
 
   const checkInteractions = useCallback(async () => {
     if (medicines.length < 2) {
       setData(null);
+      setRateLimitError(null);
       return;
     }
 
@@ -125,6 +127,7 @@ export function DrugInteractionShield({ medicines }: Props) {
     if (medKey === lastCheckedMeds) return;
 
     setLoading(true);
+    setRateLimitError(null);
     try {
       const res = await fetch("/api/ai/drug-interactions", {
         method: "POST",
@@ -132,6 +135,11 @@ export function DrugInteractionShield({ medicines }: Props) {
         body: JSON.stringify({ medicines }),
       });
       const result = await res.json();
+      if (res.status === 429) {
+        setRateLimitError(result.error || "Rate limit reached. Please wait a moment.");
+        setLoading(false);
+        return;
+      }
       if (result.success && result.data) {
         setData(result.data);
         setLastCheckedMeds(medKey);
@@ -189,7 +197,11 @@ export function DrugInteractionShield({ medicines }: Props) {
               Gemini AI
             </span>
           </div>
-          {loading ? (
+          {rateLimitError ? (
+            <p className="text-xs font-semibold text-amber-700 mt-0.5">
+              ⏳ {rateLimitError}
+            </p>
+          ) : loading ? (
             <p className="text-xs text-slate-500 mt-0.5">Analyzing {medicines.length} medications...</p>
           ) : data ? (
             <p className={`text-xs font-semibold mt-0.5 ${riskConfig.color}`}>

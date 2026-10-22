@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getDeviceSupabaseClient } from "@/lib/supabase/device";
+import {
+  checkRateLimit,
+  getClientIp,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  handleGeminiError,
+  RATE_LIMIT_PROFILES,
+} from "@/lib/ratelimit";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -10,6 +18,18 @@ export async function POST(req: NextRequest) {
 
     if (!message) {
       return NextResponse.json({ error: "No message provided" }, { status: 400 });
+    }
+
+    // 1. Enforce Gemini AI rate limiting per user / IP (15 requests / min)
+    const clientIp = getClientIp(req);
+    const rateLimitKey = userId || clientIp;
+    const rateLimit = checkRateLimit(rateLimitKey, RATE_LIMIT_PROFILES.GEMINI_AI);
+
+    if (!rateLimit.success) {
+      return createRateLimitResponse(
+        rateLimit,
+        `CuraBot message limit reached. Please wait ${rateLimit.retryAfterSec} seconds before sending another message.`
+      );
     }
 
     if (!process.env.GEMINI_API_KEY) {
@@ -58,35 +78,18 @@ export async function POST(req: NextRequest) {
         return `- ${m.name}${m.dosage ? ` (${m.dosage})` : ""} → Bay ${sched?.compartment_number || "?"} at ${sched?.scheduled_time?.slice(0, 5) || "?"} ${sched?.days_of_week?.length === 7 ? "daily" : "selected days"}${m.instructions ? ` | Note: ${m.instructions}` : ""}`;
       }).join("\n") || "No active medications";
 
-      const doseList = doses?.map((d: any) => {
-        const sched = d.medication_schedules as any;
-        const med = sched?.medications;
-        const dueTime = new Date(d.due_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
-        return `- ${med?.name || "Unknown"} at ${dueTime}: ${d.status} ${d.acknowledged_at ? `(taken at ${new Date(d.acknowledged_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })})` : ""}`;
-      }).join("\n") || "No doses today";
+      const doseStatus = doses?.map((d: any) => {
+        const sched = d.medication_schedules;
+        return `- Bay ${sched?.compartment_number || "?"}: ${sched?.medications?.name || "Med"} scheduled at ${d.due_at?.slice(11, 16)} → Status: ${d.status.toUpperCase()}`;
+      }).join("\n") || "No doses scheduled for today";
 
-      const deviceStatus = device
-        ? `Device: ${device.label || "CuraSync Dispenser"}, Last seen: ${device.last_heartbeat_at ? new Date(device.last_heartbeat_at).toLocaleTimeString() : "Never"}`
-        : "No device connected";
-
-      patientContext = `
-PATIENT CONTEXT:
-Active Medications:
-${medList}
-
-Today's Dose Schedule:
-${doseList}
-
-${deviceStatus}
-Current time: ${new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" })} IST
-`;
+      patientContext = `Current Medication Regimen:\n${medList}\n\nToday's Doses:\n${doseStatus}\n\nESP32 Dispenser Status: ${device ? `Active (${device.label || "CuraSync Dispenser"})` : "No device paired"}`;
     }
 
-    // Check if user wants to trigger a device alert
-    const triggerAlertMatch = message.toLowerCase().match(/trigger.*(alert|alarm|buzzer).*(bay\s*)?([123])/i) ||
-      message.toLowerCase().match(/(ring|buzz|alert).*(bay\s*)?([123])/i);
-    
-    let deviceAction = null;
+    // Check if user is asking to trigger a device alert
+    let deviceAction: string | null = null;
+    const triggerAlertMatch = message.match(/(trigger|ring|alert|buzz|sound)\s+(the\s+)?(bay|compartment|box)?\s*([123])/i);
+
     if (triggerAlertMatch && deviceKey && userId) {
       const bayNum = parseInt(triggerAlertMatch[3] || "1");
       try {
@@ -110,7 +113,7 @@ Current time: ${new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute
       } catch {}
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const systemPrompt = `You are CuraBot, CuraSync's friendly AI health assistant for an elderly patient's smart pill dispenser system. You have access to the patient's live medication data.
 
@@ -137,16 +140,16 @@ Guidelines:
     const result = await model.generateContent(`${systemPrompt}\n\nUser asks: ${message}`);
     const reply = result.response.text().trim();
 
-    return NextResponse.json({
-      success: true,
-      reply,
-      deviceAction,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        reply,
+        deviceAction,
+      },
+      { headers: getRateLimitHeaders(rateLimit) }
+    );
   } catch (error: any) {
     console.error("CuraBot error:", error);
-    return NextResponse.json(
-      { error: error?.message || "CuraBot encountered an error" },
-      { status: 500 }
-    );
+    return handleGeminiError(error, "CuraBot encountered an error");
   }
 }

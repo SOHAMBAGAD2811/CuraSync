@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getDeviceSupabaseClient } from "@/lib/supabase/device";
+import {
+  checkRateLimit,
+  getClientIp,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  handleGeminiError,
+  RATE_LIMIT_PROFILES,
+} from "@/lib/ratelimit";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -10,6 +18,17 @@ export async function POST(req: NextRequest) {
 
     if (!userId) {
       return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+    }
+
+    // 1. Enforce Gemini Adherence rate limiting per user / IP (8 requests / min)
+    const clientIp = getClientIp(req);
+    const rateLimit = checkRateLimit(userId || clientIp, RATE_LIMIT_PROFILES.GEMINI_ADHERENCE);
+
+    if (!rateLimit.success) {
+      return createRateLimitResponse(
+        rateLimit,
+        `Adherence insights report limit reached. Please wait ${rateLimit.retryAfterSec} seconds before refreshing.`
+      );
     }
 
     if (!process.env.GEMINI_API_KEY) {
@@ -133,7 +152,7 @@ ${Object.entries(bayStats).map(([bay, stats]) => {
 Device events: ${deviceEvents?.length || 0} total (last 30 days)
 `;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const prompt = `You are CuraSync's Predictive Adherence AI. Analyze this patient's medication adherence data and generate actionable insights.
 
@@ -207,16 +226,16 @@ Notes:
       });
     }
 
-    return NextResponse.json({
-      success: true,
-      data: parsed,
-      stats: { totalDoses, takenDoses, missedDoses, lateDoses, adherenceRate, dayStats, bayStats },
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        data: parsed,
+        stats: { totalDoses, takenDoses, missedDoses, lateDoses, adherenceRate, dayStats, bayStats },
+      },
+      { headers: getRateLimitHeaders(rateLimit) }
+    );
   } catch (error: any) {
     console.error("Adherence insights error:", error);
-    return NextResponse.json(
-      { error: error?.message || "Failed to generate insights" },
-      { status: 500 }
-    );
+    return handleGeminiError(error, "Failed to generate adherence insights");
   }
 }

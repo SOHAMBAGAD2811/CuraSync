@@ -3,10 +3,20 @@ import type { Database, DoseStatus } from "@/lib/types/database";
 
 type DoseOccurrence = Database["public"]["Tables"]["dose_occurrences"]["Row"];
 
+const lastSyncCache = new Map<string, number>();
+
 /**
  * Ensure today's dose occurrences exist for all active medication schedules
  */
-export async function syncTodayDoseOccurrences(patientId: string) {
+export async function syncTodayDoseOccurrences(patientId: string, force = false) {
+  const nowMs = Date.now();
+  const lastSync = lastSyncCache.get(patientId) || 0;
+  // Rate limit client dose syncs to at most once every 10 seconds per patient
+  if (!force && nowMs - lastSync < 10000) {
+    return;
+  }
+  lastSyncCache.set(patientId, nowMs);
+
   const supabase = createClient();
 
   // 1. Fetch active schedules
