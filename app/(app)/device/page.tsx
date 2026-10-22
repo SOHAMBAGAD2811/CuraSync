@@ -13,6 +13,13 @@ import {
   RefreshCw,
   Play,
   Loader2,
+  Tv,
+  Send,
+  Volume2,
+  VolumeX,
+  Sparkles,
+  Clock,
+  Radio,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
@@ -29,6 +36,17 @@ export default function DevicePage() {
   const [copied, setCopied] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [simStatus, setSimStatus] = useState<string | null>(null);
+
+  // LCD Remote Showcase State
+  const [lcdLine1, setLcdLine1] = useState("TAKE CITAFIL 5MG");
+  const [lcdLine2, setLcdLine2] = useState("COMPARTMENT 1");
+  const [ringBuzzer, setRingBuzzer] = useState(true);
+  const [durationSec, setDurationSec] = useState(15);
+  const [sendingMsg, setSendingMsg] = useState(false);
+  const [msgStatus, setMsgStatus] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const supabase = createClient();
 
@@ -91,6 +109,53 @@ export default function DevicePage() {
       Date.now() - new Date(device.last_heartbeat_at).getTime() < 5 * 60 * 1000
   );
 
+  // LCD Remote Control Dispatch
+  const handleSendLcdMessage = async () => {
+    if (!device) return;
+    setSendingMsg(true);
+    setMsgStatus(null);
+
+    try {
+      const res = await fetch("/api/device/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_key: device.device_key,
+          line1: lcdLine1,
+          line2: lcdLine2,
+          ring_buzzer: ringBuzzer,
+          duration_sec: durationSec,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setMsgStatus({
+          type: "success",
+          text: `Message queued for physical LCD! ESP32 polls every 5s and will show "${lcdLine1.slice(0, 16)}" with buzzer ${ringBuzzer ? "RINGING" : "off"}.`,
+        });
+      } else {
+        setMsgStatus({
+          type: "error",
+          text: data.error || "Failed to transmit message to device.",
+        });
+      }
+    } catch {
+      setMsgStatus({
+        type: "error",
+        text: "Network error sending message to device.",
+      });
+    } finally {
+      setSendingMsg(false);
+    }
+  };
+
+  const applyPreset = (line1: string, line2: string, buzzer: boolean) => {
+    setLcdLine1(line1);
+    setLcdLine2(line2);
+    setRingBuzzer(buzzer);
+  };
+
   // Simulation test functions calling real backend endpoints
   const handleSimulateHeartbeat = async () => {
     if (!device) return;
@@ -105,7 +170,13 @@ export default function DevicePage() {
       });
       const data = await res.json();
       if (data.success) {
-        setSimStatus("Connection ping acknowledged! Device is now Online.");
+        if (data.custom_msg) {
+          setSimStatus(
+            `Connection ping acknowledged! ESP32 picked up queued message: "${data.custom_msg.line1}" / "${data.custom_msg.line2}" (Buzzer: ${data.custom_msg.ring_buzzer ? "RINGING" : "OFF"})`
+          );
+        } else {
+          setSimStatus("Connection ping acknowledged! Device is now Online.");
+        }
       } else {
         setSimStatus(`Error: ${data.error}`);
       }
@@ -242,6 +313,233 @@ export default function DevicePage() {
                     </>
                   )}
                 </button>
+              </div>
+            )}
+          </div>
+
+          {/* Interactive 1602 LCD & Buzzer Showcase */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center flex-shrink-0">
+                  <Tv className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-slate-900">
+                      1602 LCD & Buzzer Remote Control
+                    </h2>
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                      Live Hardware Link
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Type a message to showcase on the physical 16x2 LCD display & ring the buzzer
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Virtual 1602 LCD Hardware Preview */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
+                <span className="flex items-center gap-1.5">
+                  <Radio className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
+                  Physical 1602 LCD (0x27) Live Preview
+                </span>
+                <span className="font-mono text-[11px] text-slate-400">16 Columns x 2 Rows</span>
+              </div>
+
+              {/* Retro Hardware LCD Screen Frame */}
+              <div className="p-3 bg-slate-900 rounded-xl shadow-inner border-2 border-slate-700/80">
+                <div className="relative bg-[#143321] rounded-lg p-4 font-mono border border-[#235838] shadow-[inset_0_2px_10px_rgba(0,0,0,0.6)] overflow-hidden">
+                  {/* Subtle LCD sub-pixel grid overlay */}
+                  <div className="absolute inset-0 bg-[radial-gradient(#1f4b30_1px,transparent_1px)] [background-size:4px_4px] opacity-30 pointer-events-none" />
+
+                  {/* Row 1 */}
+                  <div className="relative text-base sm:text-lg tracking-[0.25em] font-bold text-[#86efac] drop-shadow-[0_0_8px_rgba(134,239,172,0.8)] whitespace-pre font-mono leading-relaxed select-none">
+                    {lcdLine1.slice(0, 16).padEnd(16, " ")}
+                  </div>
+                  {/* Row 2 */}
+                  <div className="relative text-base sm:text-lg tracking-[0.25em] font-bold text-[#86efac] drop-shadow-[0_0_8px_rgba(134,239,172,0.8)] whitespace-pre font-mono leading-relaxed select-none mt-1">
+                    {lcdLine2.slice(0, 16).padEnd(16, " ")}
+                  </div>
+
+                  {/* LCD Overlay indicators */}
+                  <div className="mt-3 pt-2 border-t border-[#235838]/60 flex items-center justify-between text-[10px] text-[#4ade80]/70 font-mono tracking-wider">
+                    <span>CURASYNC I2C 0x27</span>
+                    <span className="flex items-center gap-1">
+                      {ringBuzzer ? (
+                        <>
+                          <Volume2 className="w-3 h-3 text-[#86efac] animate-pulse" />
+                          BUZZER ARMED ({durationSec}s)
+                        </>
+                      ) : (
+                        <>
+                          <VolumeX className="w-3 h-3 text-slate-400" />
+                          BUZZER MUTED
+                        </>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Preset Buttons */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700">Quick Presets:</label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => applyPreset("TAKE CITAFIL 5MG", "COMPARTMENT 1", true)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200 transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <span>💊</span>
+                  <span>Take Citafil (C1)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset("HYDRATION ALERT", "DRINK 250ML H2O", true)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200 transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <span>💧</span>
+                  <span>Drink Water</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset("URGENT ALERT!", "CALL CAREGIVER", true)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200 transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <span>🚨</span>
+                  <span>Emergency Alert</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset("BUZZER TEST OK!", "CURASYNC ONLINE", true)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200 transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <span>🔔</span>
+                  <span>Test Buzzer Sound</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset("WELCOME HOME", "READY TO SYNC", false)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200 transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <span>✨</span>
+                  <span>Custom Welcome</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Form Controls */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-slate-700">Line 1 Text</label>
+                  <span
+                    className={`text-[11px] font-mono ${
+                      lcdLine1.length > 16 ? "text-red-500 font-bold" : "text-slate-400"
+                    }`}
+                  >
+                    {lcdLine1.length}/16
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  maxLength={16}
+                  value={lcdLine1}
+                  onChange={(e) => setLcdLine1(e.target.value.toUpperCase())}
+                  placeholder="LINE 1 MESSAGE"
+                  className="w-full text-xs font-mono uppercase px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-slate-700">Line 2 Text</label>
+                  <span
+                    className={`text-[11px] font-mono ${
+                      lcdLine2.length > 16 ? "text-red-500 font-bold" : "text-slate-400"
+                    }`}
+                  >
+                    {lcdLine2.length}/16
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  maxLength={16}
+                  value={lcdLine2}
+                  onChange={(e) => setLcdLine2(e.target.value.toUpperCase())}
+                  placeholder="LINE 2 MESSAGE"
+                  className="w-full text-xs font-mono uppercase px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
+                />
+              </div>
+            </div>
+
+            {/* Options & Dispatch Button */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2 border-t border-slate-100">
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700 select-none">
+                  <input
+                    type="checkbox"
+                    checked={ringBuzzer}
+                    onChange={(e) => setRingBuzzer(e.target.checked)}
+                    className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300"
+                  />
+                  <span>Ring Physical Buzzer (GPIO 26)</span>
+                </label>
+
+                <div className="flex items-center gap-1.5 text-slate-600">
+                  <Clock className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Display Duration:</span>
+                  <select
+                    value={durationSec}
+                    onChange={(e) => setDurationSec(Number(e.target.value))}
+                    className="text-xs bg-slate-50 border border-slate-200 rounded-md px-2 py-1 font-medium"
+                  >
+                    <option value={5}>5 seconds</option>
+                    <option value={10}>10 seconds</option>
+                    <option value={15}>15 seconds</option>
+                    <option value={30}>30 seconds</option>
+                  </select>
+                </div>
+              </div>
+
+              <button
+                onClick={handleSendLcdMessage}
+                disabled={sendingMsg || !device}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
+              >
+                {sendingMsg ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Sending to ESP32...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Showcase on Physical LCD</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {msgStatus && (
+              <div
+                className={`p-3 rounded-xl text-xs font-medium border flex items-start gap-2 ${
+                  msgStatus.type === "success"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                    : "bg-red-50 text-red-800 border-red-200"
+                }`}
+              >
+                {msgStatus.type === "success" ? (
+                  <Check className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                ) : (
+                  <span className="w-4 h-4 text-red-600 flex-shrink-0 font-bold">!</span>
+                )}
+                <span>{msgStatus.text}</span>
               </div>
             )}
           </div>

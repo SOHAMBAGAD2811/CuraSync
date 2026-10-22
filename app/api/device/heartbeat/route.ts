@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDeviceSupabaseClient } from "@/lib/supabase/device";
+import { deviceMessages } from "@/lib/device-messages";
 
 export async function POST(req: NextRequest) {
   try {
@@ -50,10 +51,25 @@ export async function POST(req: NextRequest) {
       raw_payload: body,
     });
 
+    // 4. Retrieve any queued LCD message or buzzer trigger from frontend
+    const queuedMessage = deviceMessages.get(deviceKey);
+    if (queuedMessage) {
+      // Delete once fetched so it doesn't repeatedly re-trigger
+      deviceMessages.delete(deviceKey);
+    }
+
     return NextResponse.json({
       success: true,
       timestamp: now,
       message: "Heartbeat acknowledged",
+      custom_msg: queuedMessage
+        ? {
+            line1: queuedMessage.line1,
+            line2: queuedMessage.line2,
+            ring_buzzer: queuedMessage.ringBuzzer,
+            duration_sec: queuedMessage.durationSec,
+          }
+        : null,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Internal Server Error";

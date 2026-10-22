@@ -1,5 +1,5 @@
 /*
- * CuraSync ESP32 Firmware (v2.1)
+ * CuraSync ESP32 Firmware (v2.2)
  * -------------------------------------------------------------
  * Hardware:
  *   - ESP32 Development Board
@@ -7,13 +7,14 @@
  *   - 1602 LCD I2C Display (Address: 0x27)
  *   - 3x Reed Switches (Compartments 1, 2, 3 -> GPIO 32, 33, 25)
  *   - 3x Indicator LEDs (Compartments 1, 2, 3 -> GPIO 18, 19, 23)
- *   - Passive Buzzer (GPIO 26)
+ *   - Buzzer (GPIO 26) - Supports both Active and Passive Buzzers!
  *
- * Key Fixes:
- *   - Automatic NTP Internet Time Sync (IST UTC+5:30) with RTC calibration
- *   - Native ESP32 internal clock fallback if RTC battery died
- *   - Reliable direct HTTP / HTTPS communication (supports both local IP and Vercel)
- *   - Crystal-clear LCD status messages and Serial monitor feedback
+ * New Features:
+ *   - Live LCD Remote Showcase: Displays custom messages sent from frontend
+ *   - Instant Web Buzzer Ringing & Test Beep on Boot
+ *   - Rapid 5-second Keepalive polling for real-time web interactivity
+ *   - NTP Atomic Time Sync (IST UTC+5:30) with RTC calibration
+ *   - Full offline fallback mode
  */
 
 #include <Wire.h>
@@ -38,6 +39,11 @@ const char* SERVER_URL    = "http://192.168.1.106:3000";
 
 // Your verified Device Key from CuraSync (/device page)
 const char* DEVICE_KEY    = "cs_dev_aralnk0g_mvhwiq49";
+
+// Buzzer Type:
+// - Set 'false' for Passive Buzzer (uses tone/frequency) [DEFAULT]
+// - Set 'true' for Active Buzzer (uses direct HIGH/LOW DC signal)
+const bool IS_ACTIVE_BUZZER = false;
 
 // India Standard Time (IST): UTC+5:30 -> 5.5 * 3600 = 19800 seconds
 const long  GMT_OFFSET_SEC      = 19800;
@@ -64,9 +70,6 @@ const int OPEN_STATE = LOW;
 const unsigned long BUZZER_DURATION   = 7000UL;   // Beep for 7 seconds
 const unsigned long REMINDER_INTERVAL = 60000UL;  // Re-buzz every 60s if not taken
 
-const int BUZZER_FREQUENCY = 2000;
-const int BUZZER_VOLUME    = 128;
-
 bool pending[3]          = {false, false, false};
 bool firstBuzzPending[3] = {false, false, false};
 bool previousOpen[3]     = {false, false, false};
@@ -86,28 +89,54 @@ unsigned long lastLcdUpdate         = 0;
 unsigned long lastKeepalivePing     = 0;
 unsigned long lastScheduleSync      = 0;
 
-const unsigned long KEEPALIVE_INTERVAL     = 45000UL;   // Ping server every 45s
+// Poll server every 5 seconds for rapid web message responsiveness
+const unsigned long KEEPALIVE_INTERVAL     = 5000UL;
 const unsigned long SCHEDULE_SYNC_INTERVAL = 300000UL;  // Sync schedule every 5 mins
 
 bool serverConnected = false;
 
-// -------------------------------------------------------------
-// BUZZER FUNCTIONS
-// -------------------------------------------------------------
-void startBuzzer(int compartment) {
-  ledcWrite(buzzerPin, BUZZER_VOLUME);
+// Custom LCD message display state (dispatched from frontend)
+bool customMessageActive = false;
+unsigned long customMessageStart = 0;
+unsigned long customMessageDuration = 15000UL;
+char customLine1[17] = "";
+char customLine2[17] = "";
 
+// -------------------------------------------------------------
+// BUZZER DRIVER FUNCTIONS (Universal Passive & Active support)
+// -------------------------------------------------------------
+void soundBuzzerOn() {
+  if (IS_ACTIVE_BUZZER) {
+    digitalWrite(buzzerPin, HIGH);
+  } else {
+    // 2400 Hz resonant frequency works loud and clear on passive buzzers
+    tone(buzzerPin, 2400);
+  }
+}
+
+void soundBuzzerOff() {
+  if (IS_ACTIVE_BUZZER) {
+    digitalWrite(buzzerPin, LOW);
+  } else {
+    noTone(buzzerPin);
+    digitalWrite(buzzerPin, LOW);
+  }
+}
+
+void startBuzzer(int compartment) {
+  soundBuzzerOn();
   buzzerActive = true;
   buzzerStart = millis();
-  lastReminder[compartment] = millis();
-  buzzerCompartment = compartment;
-  firstBuzzPending[compartment] = false;
-
-  nextCompartment = (compartment + 1) % 3;
+  if (compartment >= 0 && compartment < 3) {
+    lastReminder[compartment] = millis();
+    buzzerCompartment = compartment;
+    firstBuzzPending[compartment] = false;
+    nextCompartment = (compartment + 1) % 3;
+  }
 }
 
 void stopBuzzer() {
-  ledcWrite(buzzerPin, 0);
+  soundBuzzerOff();
   buzzerActive = false;
   buzzerCompartment = -1;
 }
@@ -232,7 +261,7 @@ void fetchScheduleFromCuraSync() {
   http.end();
 }
 
-// 2. Send Keepalive Ping to CuraSync
+// 2. Send Keepalive Ping to CuraSync & Check for LCD Remote Messages
 void sendKeepalivePing() {
   if (WiFi.status() != WL_CONNECTED) return;
 
@@ -240,8 +269,6 @@ void sendKeepalivePing() {
   WiFiClientSecure secureClient;
 
   String url = String(SERVER_URL) + "/api/device/heartbeat";
-  Serial.print("[CuraSync] Sending heartbeat ping to: ");
-  Serial.println(url);
 
   if (url.startsWith("https://")) {
     secureClient.setInsecure();
@@ -252,20 +279,62 @@ void sendKeepalivePing() {
 
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(5000);
+  http.setTimeout(4000);
 
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) + "\",\"status\":\"OK\"}";
   int httpCode = http.POST(jsonBody);
 
   if (httpCode == HTTP_CODE_OK) {
     serverConnected = true;
-    Serial.println("[CuraSync] Ping acknowledged! Dashboard updated to Online.");
+    String response = http.getString();
+
+    // Check if web dashboard sent a custom LCD message or buzzer command
+    StaticJsonDocument<768> doc;
+    DeserializationError err = deserializeJson(doc, response);
+    if (!err && doc.containsKey("custom_msg") && !doc["custom_msg"].isNull()) {
+      const char* l1 = doc["custom_msg"]["line1"] | "";
+      const char* l2 = doc["custom_msg"]["line2"] | "";
+      bool ringBuzzer = doc["custom_msg"]["ring_buzzer"] | false;
+      int durSec = doc["custom_msg"]["duration_sec"] | 15;
+
+      Serial.println("\n==========================================");
+      Serial.println("  >>> INCOMING MESSAGE FROM WEB APP <<<   ");
+      Serial.printf("  Line 1: \"%s\"\n", l1);
+      Serial.printf("  Line 2: \"%s\"\n", l2);
+      Serial.printf("  Buzzer: %s | Duration: %d seconds\n", ringBuzzer ? "ACTIVE" : "OFF", durSec);
+      Serial.println("==========================================\n");
+
+      customMessageActive = true;
+      customMessageStart = millis();
+      customMessageDuration = (unsigned long)durSec * 1000UL;
+
+      strncpy(customLine1, l1, 16);
+      customLine1[16] = '\0';
+      strncpy(customLine2, l2, 16);
+      customLine2[16] = '\0';
+
+      // Immediately display on LCD screen
+      char pad1[17];
+      char pad2[17];
+      snprintf(pad1, sizeof(pad1), "%-16s", customLine1);
+      snprintf(pad2, sizeof(pad2), "%-16s", customLine2);
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(pad1);
+      lcd.setCursor(0, 1);
+      lcd.print(pad2);
+
+      // Trigger buzzer if requested
+      if (ringBuzzer) {
+        soundBuzzerOn();
+        buzzerActive = true;
+        buzzerStart = millis();
+      }
+    }
   } else {
     serverConnected = false;
     Serial.printf("[CuraSync] Ping failed, HTTP Code: %d\n", httpCode);
-    if (httpCode > 0) {
-      Serial.println(http.getString());
-    }
   }
   http.end();
 }
@@ -288,7 +357,7 @@ void reportCompartmentEvent(int compartmentNumber) {
 
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(5000);
+  http.setTimeout(4000);
 
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) +
                     "\",\"event_type\":\"compartment_open\",\"compartment_number\":" +
@@ -301,9 +370,6 @@ void reportCompartmentEvent(int compartmentNumber) {
     Serial.printf("[CuraSync] Event logged for Compartment %d: %s\n", compartmentNumber, response.c_str());
   } else {
     Serial.printf("[CuraSync] Event post failed, HTTP Code: %d\n", httpCode);
-    if (httpCode > 0) {
-      Serial.println(http.getString());
-    }
   }
   http.end();
 }
@@ -329,9 +395,15 @@ void setup() {
     previousOpen[i] = (digitalRead(reedPins[i]) == OPEN_STATE);
   }
 
-  // Setup passive buzzer PWM
-  ledcAttach(buzzerPin, BUZZER_FREQUENCY, 8);
-  ledcWrite(buzzerPin, 0);
+  // Setup Buzzer pin
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW);
+
+  // Quick startup buzzer chirp self-test (150ms)
+  Serial.println("[CuraSync] Buzzer self-test chirp...");
+  soundBuzzerOn();
+  delay(150);
+  soundBuzzerOff();
 
   // Initialize LCD display
   lcd.init();
@@ -464,42 +536,59 @@ void loop() {
     }
   }
 
-  // 4. Update LCD Display every 300ms
+  // 4. Update LCD Display
   if (currentMillis - lastLcdUpdate >= 300) {
     lastLcdUpdate = currentMillis;
 
-    // Line 1: Time: HH:MM:SS
-    char timeLine[17];
-    snprintf(timeLine, sizeof(timeLine),
-             "Time: %02d:%02d:%02d",
-             now.hour(), now.minute(), now.second());
-
-    lcd.setCursor(0, 0);
-    lcd.print(timeLine);
-    lcd.print("  ");
-
-    // Line 2: Dose status or connection status
-    int firstPending = -1;
-    for (int i = 0; i < 3; i++) {
-      if (pending[i]) {
-        firstPending = i;
-        break;
-      }
-    }
-
-    lcd.setCursor(0, 1);
-    if (firstPending == -1) {
-      if (serverConnected) {
-        lcd.print("Online [Synced] ");
-      } else if (WiFi.status() == WL_CONNECTED) {
-        lcd.print("WiFi Connected  ");
+    // A) If a custom message was dispatched from frontend, showcase it!
+    if (customMessageActive) {
+      if (currentMillis - customMessageStart >= customMessageDuration) {
+        customMessageActive = false;
+        lcd.clear();
       } else {
-        lcd.print("Ready [Offline] ");
+        char pad1[17];
+        char pad2[17];
+        snprintf(pad1, sizeof(pad1), "%-16s", customLine1);
+        snprintf(pad2, sizeof(pad2), "%-16s", customLine2);
+        lcd.setCursor(0, 0);
+        lcd.print(pad1);
+        lcd.setCursor(0, 1);
+        lcd.print(pad2);
       }
-    } else {
-      lcd.print("DOSE DUE: C");
-      lcd.print(firstPending + 1);
-      lcd.print("    ");
+    } 
+    // B) Standard Real-Time Clock & Compartment Status
+    else {
+      char timeLine[17];
+      snprintf(timeLine, sizeof(timeLine),
+               "Time: %02d:%02d:%02d",
+               now.hour(), now.minute(), now.second());
+
+      lcd.setCursor(0, 0);
+      lcd.print(timeLine);
+      lcd.print("  ");
+
+      int firstPending = -1;
+      for (int i = 0; i < 3; i++) {
+        if (pending[i]) {
+          firstPending = i;
+          break;
+        }
+      }
+
+      lcd.setCursor(0, 1);
+      if (firstPending == -1) {
+        if (serverConnected) {
+          lcd.print("Online [Synced] ");
+        } else if (WiFi.status() == WL_CONNECTED) {
+          lcd.print("WiFi Connected  ");
+        } else {
+          lcd.print("Ready [Offline] ");
+        }
+      } else {
+        lcd.print("DOSE DUE: C");
+        lcd.print(firstPending + 1);
+        lcd.print("    ");
+      }
     }
   }
 
