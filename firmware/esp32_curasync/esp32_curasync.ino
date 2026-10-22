@@ -25,6 +25,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include "driver/gpio.h"
 
 // =============================================================
 // USER CONFIGURATION
@@ -44,10 +45,13 @@ const bool PREFER_LOCAL_DEV = false;
 // Your verified Device Key from CuraSync (/device page)
 const char* DEVICE_KEY    = "cs_dev_aralnk0g_mvhwiq49";
 
-// Buzzer Type:
-// - Set 'false' for Passive Buzzer (uses 2.4kHz tone frequency) [DEFAULT]
-// - Set 'true' for Active Buzzer (uses direct HIGH/LOW DC signal)
+// Buzzer Configuration:
+// - Set 'false' for Passive Buzzer (uses clean single 2400Hz tone with max 40mA GPIO drive) [DEFAULT]
+// - Set 'true' for Active Buzzer (uses pure DC HIGH for full 85dB volume)
 const bool IS_ACTIVE_BUZZER = false;
+
+// Clean, solid single tone frequency (no warble/siren)
+const int BUZZER_FREQUENCY = 2400;
 
 // India Standard Time (IST): UTC+5:30 -> 5.5 * 3600 = 19800 seconds
 const long  GMT_OFFSET_SEC      = 19800;
@@ -110,44 +114,33 @@ char customLine1[17] = "";
 char customLine2[17] = "";
 
 // -------------------------------------------------------------
-// BUZZER DRIVER FUNCTIONS (Universal High-Volume Acoustic Modulation)
+// BUZZER DRIVER FUNCTIONS (Clean, High-Power Single Tone)
 // -------------------------------------------------------------
 void soundBuzzerOn() {
   if (IS_ACTIVE_BUZZER) {
     digitalWrite(buzzerPin, HIGH);
   } else {
-    // 2730 Hz is peak mechanical resonance of 12mm piezos
-    tone(buzzerPin, 2730);
+    tone(buzzerPin, BUZZER_FREQUENCY);
   }
 }
 
 void soundBuzzerOff() {
-  noTone(buzzerPin);
+  if (!IS_ACTIVE_BUZZER) {
+    noTone(buzzerPin);
+  }
   digitalWrite(buzzerPin, LOW);
 }
 
-// High-Volume Siren Modulator:
-// Uses resonant frequency alternating dual-tone (2730 Hz <-> 3300 Hz)
-// which produces maximum sound pressure level (SPL) and cuts through noise!
+// Crisp, professional medical dispenser beep pattern (300ms ON, 150ms OFF)
+// Single pure tone - no annoying siren or frequency warbles
 void updateBuzzerSound() {
   if (!buzzerActive) return;
 
-  if (IS_ACTIVE_BUZZER) {
-    // Active Buzzer: Urgent pulsed DC (140ms ON, 60ms OFF)
-    unsigned long cycle = millis() % 200;
-    if (cycle < 140) {
-      digitalWrite(buzzerPin, HIGH);
-    } else {
-      digitalWrite(buzzerPin, LOW);
-    }
+  unsigned long cycle = millis() % 450;
+  if (cycle < 300) {
+    soundBuzzerOn();
   } else {
-    // Passive Buzzer: Alternating dual-tone at piezo's mechanical resonance peak
-    unsigned long cycle = (millis() / 90) % 2;
-    if (cycle == 0) {
-      tone(buzzerPin, 2730);
-    } else {
-      tone(buzzerPin, 3300);
-    }
+    soundBuzzerOff();
   }
 }
 
@@ -473,23 +466,16 @@ void setup() {
     previousOpen[i] = (digitalRead(reedPins[i]) == OPEN_STATE);
   }
 
-  // Setup Buzzer pin
+  // Setup Buzzer pin with maximum current drive (40mA)
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
+  gpio_set_drive_capability((gpio_num_t)buzzerPin, GPIO_DRIVE_CAP_3);
 
-  // Quick startup buzzer chirp self-test (dual-tone)
-  Serial.println("[CuraSync] Buzzer self-test chirp...");
-  if (IS_ACTIVE_BUZZER) {
-    digitalWrite(buzzerPin, HIGH);
-    delay(200);
-    digitalWrite(buzzerPin, LOW);
-  } else {
-    tone(buzzerPin, 2730);
-    delay(120);
-    tone(buzzerPin, 3300);
-    delay(120);
-    soundBuzzerOff();
-  }
+  // Quick startup single beep self-test (clean, solid tone)
+  Serial.println("[CuraSync] Buzzer startup self-test...");
+  soundBuzzerOn();
+  delay(180);
+  soundBuzzerOff();
 
   // Initialize LCD display
   lcd.init();
