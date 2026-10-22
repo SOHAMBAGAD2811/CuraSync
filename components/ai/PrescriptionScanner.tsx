@@ -29,22 +29,26 @@ interface ScannedMedicine {
 interface Props {
   onFillForm: (medicine: ScannedMedicine) => void;
   existingCompartments?: number[]; // already-used compartment numbers
+  variant?: "primary" | "compact";
 }
 
 const COMPARTMENT_COLORS: Record<number, string> = {
-  1: "text-red-600 bg-red-50 border-red-200",
-  2: "text-emerald-600 bg-emerald-50 border-emerald-200",
-  3: "text-slate-600 bg-slate-100 border-slate-300",
+  1: "text-red-700 bg-red-50 border-red-200",
+  2: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  3: "text-slate-700 bg-slate-100 border-slate-300",
 };
 
-export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: Props) {
+export function PrescriptionScanner({
+  onFillForm,
+  existingCompartments = [],
+  variant = "primary",
+}: Props) {
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [mimeType, setMimeType] = useState("image/jpeg");
   const [scanning, setScanning] = useState(false);
   const [results, setResults] = useState<ScannedMedicine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [rawText, setRawText] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [cameraMode, setCameraMode] = useState(false);
@@ -110,7 +114,6 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
     setResults(null);
 
     try {
-      // Strip the data URL prefix to get raw base64
       const base64 = preview.split(",")[1];
       const res = await fetch("/api/ai/scan-prescription", {
         method: "POST",
@@ -131,10 +134,8 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
         return;
       }
 
-      // Auto-assign compartments avoiding already-used ones
       let nextComp = 1;
       const assigned = parsed.medicines.map((m: ScannedMedicine) => {
-        // Use AI suggestion if available and not used, else pick next free
         let comp = m.suggestedCompartment;
         if (existingCompartments.includes(comp)) {
           while (existingCompartments.includes(nextComp) && nextComp <= 3) nextComp++;
@@ -145,7 +146,6 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
       });
 
       setResults(assigned);
-      setRawText(parsed.rawText || null);
       setConfidence(parsed.confidence || null);
       if (assigned.length === 1) setSelectedIdx(0);
     } catch (err: unknown) {
@@ -169,7 +169,6 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
     setPreview(null);
     setResults(null);
     setError(null);
-    setRawText(null);
     setConfidence(null);
     setSelectedIdx(null);
   };
@@ -177,32 +176,54 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
   return (
     <>
       {/* Trigger Button */}
-      <button
-        id="prescription-scanner-btn"
-        onClick={() => setOpen(true)}
-        type="button"
-        className="flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition-all shadow-md hover:shadow-lg cursor-pointer"
-      >
-        <Scan className="w-4 h-4" />
-        <span>Scan Prescription</span>
-        <span className="flex items-center gap-0.5 text-[10px] bg-white/20 px-1.5 py-0.5 rounded-full">
-          <Sparkles className="w-2.5 h-2.5" />
-          AI
-        </span>
-      </button>
+      {variant === "compact" ? (
+        <button
+          id="prescription-scanner-btn"
+          onClick={() => setOpen(true)}
+          type="button"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+        >
+          <Scan className="w-3.5 h-3.5 text-sky-600" />
+          <span>Scan Prescription</span>
+          <span className="flex items-center gap-0.5 text-[9px] bg-sky-200/60 text-sky-800 px-1.5 py-0.2 rounded-full font-bold">
+            <Sparkles className="w-2.5 h-2.5 text-sky-600" />
+            AI
+          </span>
+        </button>
+      ) : (
+        <button
+          id="prescription-scanner-btn"
+          onClick={() => setOpen(true)}
+          type="button"
+          className="flex items-center gap-2 px-3.5 py-2.5 bg-gradient-to-r from-sky-500 to-teal-500 hover:from-sky-600 hover:to-teal-600 text-white text-sm font-semibold rounded-xl transition-all shadow-sm hover:shadow-md cursor-pointer"
+        >
+          <Scan className="w-4 h-4" />
+          <span>Scan Prescription</span>
+          <span className="flex items-center gap-1 text-[10px] bg-white/20 text-white px-2 py-0.5 rounded-full font-medium">
+            <Sparkles className="w-2.5 h-2.5" />
+            AI
+          </span>
+        </button>
+      )}
 
       {/* Modal */}
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
-            {/* Modal Header */}
-            <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-4 flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden">
+            {/* Modal Header — matches CuraSync theme */}
+            <div className="bg-gradient-to-r from-sky-600 via-sky-500 to-teal-600 px-5 py-4 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-white/20 backdrop-blur-xs flex items-center justify-center">
                 <Scan className="w-5 h-5 text-white" />
               </div>
               <div className="flex-1">
-                <h2 className="font-bold text-white">AI Prescription Scanner</h2>
-                <p className="text-xs text-violet-200">Snap a photo of your prescription or medicine box</p>
+                <div className="flex items-center gap-2">
+                  <h2 className="font-bold text-white text-base">AI Prescription Scanner</h2>
+                  <span className="flex items-center gap-1 text-[10px] font-semibold bg-white/20 text-white px-2 py-0.5 rounded-full">
+                    <Sparkles className="w-2.5 h-2.5" />
+                    Gemini Vision
+                  </span>
+                </div>
+                <p className="text-xs text-sky-100 mt-0.5">Snap a photo of your prescription slip or medicine box</p>
               </div>
               <button
                 type="button"
@@ -214,16 +235,16 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
             </div>
 
             <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
-              {/* Camera / Upload Area */}
+              {/* Camera / Upload Selection Area */}
               {!preview && !cameraMode && (
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
                     onClick={startCamera}
-                    className="flex flex-col items-center gap-2.5 p-5 rounded-2xl border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-all cursor-pointer group"
+                    className="flex flex-col items-center gap-2.5 p-5 rounded-2xl border-2 border-dashed border-sky-200 hover:border-sky-500 hover:bg-sky-50/60 transition-all cursor-pointer group"
                   >
-                    <div className="w-12 h-12 rounded-full bg-violet-100 group-hover:bg-violet-200 flex items-center justify-center transition-colors">
-                      <Camera className="w-6 h-6 text-violet-600" />
+                    <div className="w-12 h-12 rounded-full bg-sky-100 group-hover:bg-sky-200 flex items-center justify-center transition-colors">
+                      <Camera className="w-6 h-6 text-sky-600" />
                     </div>
                     <div className="text-center">
                       <p className="text-sm font-semibold text-slate-800">Use Camera</p>
@@ -234,10 +255,10 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex flex-col items-center gap-2.5 p-5 rounded-2xl border-2 border-dashed border-indigo-300 hover:border-indigo-500 hover:bg-indigo-50 transition-all cursor-pointer group"
+                    className="flex flex-col items-center gap-2.5 p-5 rounded-2xl border-2 border-dashed border-teal-200 hover:border-teal-500 hover:bg-teal-50/60 transition-all cursor-pointer group"
                   >
-                    <div className="w-12 h-12 rounded-full bg-indigo-100 group-hover:bg-indigo-200 flex items-center justify-center transition-colors">
-                      <Upload className="w-6 h-6 text-indigo-600" />
+                    <div className="w-12 h-12 rounded-full bg-teal-100 group-hover:bg-teal-200 flex items-center justify-center transition-colors">
+                      <Upload className="w-6 h-6 text-teal-600" />
                     </div>
                     <div className="text-center">
                       <p className="text-sm font-semibold text-slate-800">Upload Image</p>
@@ -249,27 +270,27 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
 
               {/* Camera Live View */}
               {cameraMode && (
-                <div className="relative rounded-2xl overflow-hidden bg-black">
+                <div className="relative rounded-2xl overflow-hidden bg-slate-950">
                   <video
                     ref={videoRef}
-                    className="w-full rounded-2xl"
+                    className="w-full rounded-2xl aspect-[4/3] object-cover"
                     autoPlay
                     playsInline
                     muted
                   />
-                  <div className="absolute inset-0 border-2 border-dashed border-white/40 rounded-2xl pointer-events-none" />
+                  <div className="absolute inset-4 border-2 border-dashed border-sky-400/60 rounded-xl pointer-events-none" />
                   <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-3">
                     <button
                       type="button"
                       onClick={capturePhoto}
-                      className="w-14 h-14 rounded-full bg-white border-4 border-violet-500 flex items-center justify-center shadow-lg hover:scale-105 transition-transform cursor-pointer"
+                      className="w-14 h-14 rounded-full bg-white border-4 border-sky-500 flex items-center justify-center shadow-lg hover:scale-105 transition-transform cursor-pointer"
                     >
-                      <Camera className="w-6 h-6 text-violet-600" />
+                      <Camera className="w-6 h-6 text-sky-600" />
                     </button>
                     <button
                       type="button"
                       onClick={stopCamera}
-                      className="w-10 h-10 rounded-full bg-slate-800/80 flex items-center justify-center cursor-pointer self-center"
+                      className="w-10 h-10 rounded-full bg-slate-800/80 hover:bg-slate-800 flex items-center justify-center cursor-pointer self-center"
                     >
                       <X className="w-4 h-4 text-white" />
                     </button>
@@ -279,17 +300,17 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
 
               {/* Image Preview */}
               {preview && (
-                <div className="relative rounded-2xl overflow-hidden border border-slate-200 shadow-sm">
+                <div className="relative rounded-2xl overflow-hidden border border-slate-200 shadow-xs bg-slate-50">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={preview}
                     alt="Prescription preview"
-                    className="w-full max-h-48 object-contain bg-slate-50"
+                    className="w-full max-h-52 object-contain"
                   />
                   <button
                     type="button"
                     onClick={reset}
-                    className="absolute top-2 right-2 w-7 h-7 rounded-full bg-slate-900/70 flex items-center justify-center cursor-pointer hover:bg-slate-900 transition-colors"
+                    className="absolute top-2 right-2 w-7 h-7 rounded-full bg-slate-900/70 hover:bg-slate-900 flex items-center justify-center cursor-pointer transition-colors"
                   >
                     <X className="w-3.5 h-3.5 text-white" />
                   </button>
@@ -312,8 +333,8 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
                       confidence === "high"
                         ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                         : confidence === "medium"
-                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : "bg-red-50 text-red-700 border-red-200"
+                        ? "bg-sky-50 text-sky-700 border-sky-200"
+                        : "bg-amber-50 text-amber-700 border-amber-200"
                     }`}
                   >
                     {confidence} confidence
@@ -333,26 +354,32 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
                       onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
                       className={`rounded-xl border p-4 cursor-pointer transition-all ${
                         selectedIdx === idx
-                          ? "border-violet-400 bg-violet-50 shadow-sm"
-                          : "border-slate-200 bg-white hover:border-violet-200"
+                          ? "border-sky-400 bg-sky-50/70 shadow-xs"
+                          : "border-slate-200 bg-white hover:border-sky-300 hover:bg-slate-50/50"
                       }`}
                     >
                       <div className="flex items-start gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-violet-100 flex items-center justify-center flex-shrink-0">
-                          <Pill className="w-5 h-5 text-violet-600" />
+                        <div
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors ${
+                            selectedIdx === idx
+                              ? "bg-sky-500 text-white"
+                              : "bg-sky-100 text-sky-600"
+                          }`}
+                        >
+                          <Pill className="w-5 h-5" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-2">
                             <h3 className="font-bold text-slate-900 text-sm">{med.name}</h3>
                             {selectedIdx === idx ? (
-                              <ChevronUp className="w-4 h-4 text-violet-500 flex-shrink-0" />
+                              <ChevronUp className="w-4 h-4 text-sky-600 flex-shrink-0" />
                             ) : (
                               <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />
                             )}
                           </div>
                           {med.dosage && (
-                            <span className="inline-flex items-center gap-1 text-xs text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full mt-1">
-                              <Hash className="w-3 h-3" />
+                            <span className="inline-flex items-center gap-1 text-xs text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full mt-1 font-medium">
+                              <Hash className="w-3 h-3 text-slate-400" />
                               {med.dosage}
                             </span>
                           )}
@@ -384,7 +411,7 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); handleFill(idx); }}
-                          className="mt-3 w-full py-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center gap-2 cursor-pointer"
+                          className="mt-3 w-full py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-xl transition-colors shadow-xs flex items-center justify-center gap-2 cursor-pointer"
                         >
                           <Check className="w-4 h-4" />
                           Use this — Auto-fill Form
@@ -402,7 +429,7 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
                     <button
                       type="button"
                       onClick={handleScan}
-                      className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-medium rounded-xl hover:bg-slate-50 cursor-pointer"
+                      className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-medium rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
                     >
                       Re-scan
                     </button>
@@ -411,7 +438,7 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
                       type="button"
                       onClick={handleScan}
                       disabled={scanning}
-                      className="flex-1 py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center gap-2 cursor-pointer"
+                      className="flex-1 py-2.5 bg-gradient-to-r from-sky-500 to-teal-500 hover:from-sky-600 hover:to-teal-600 text-white text-sm font-bold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Sparkles className="w-4 h-4" />
                       Scan with Gemini AI
@@ -421,13 +448,13 @@ export function PrescriptionScanner({ onFillForm, existingCompartments = [] }: P
               )}
 
               {scanning && (
-                <div className="flex flex-col items-center gap-3 py-4">
-                  <div className="w-12 h-12 rounded-full bg-violet-100 flex items-center justify-center">
-                    <Loader2 className="w-6 h-6 text-violet-600 animate-spin" />
+                <div className="flex flex-col items-center gap-3 py-6">
+                  <div className="w-12 h-12 rounded-full bg-sky-100 flex items-center justify-center">
+                    <Loader2 className="w-6 h-6 text-sky-600 animate-spin" />
                   </div>
                   <div className="text-center">
-                    <p className="text-sm font-semibold text-slate-700">Analyzing prescription...</p>
-                    <p className="text-xs text-slate-400 mt-0.5">Gemini Vision AI is reading your image</p>
+                    <p className="text-sm font-semibold text-slate-800">Analyzing prescription...</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Gemini Vision AI is reading your image</p>
                   </div>
                 </div>
               )}

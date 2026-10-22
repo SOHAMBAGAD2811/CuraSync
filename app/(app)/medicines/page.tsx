@@ -731,6 +731,7 @@ export default function MedicinesPage() {
               <div className="flex items-center gap-2">
                 {!editingMed && (
                   <PrescriptionScanner
+                    variant="compact"
                     onFillForm={(scanned) => {
                       setName(scanned.name || "");
                       setDosage(scanned.dosage || "");
