@@ -51,25 +51,63 @@ export async function POST(req: NextRequest) {
       raw_payload: body,
     });
 
-    // 4. Retrieve any queued LCD message or buzzer trigger from frontend
-    const queuedMessage = deviceMessages.get(deviceKey);
-    if (queuedMessage) {
-      // Delete once fetched so it doesn't repeatedly re-trigger
-      deviceMessages.delete(deviceKey);
+    // 4. Retrieve any queued LCD message or buzzer trigger
+    let queuedMsg: {
+      line1: string;
+      line2: string;
+      ring_buzzer: boolean;
+      duration_sec: number;
+    } | null = null;
+
+    // Check persistent database queue first (works across Vercel serverless & local)
+    try {
+      const { data: dbNotif } = await supabase
+        .from("notifications")
+        .select("*")
+        .eq("patient_id", device.patient_id)
+        .eq("type", "general")
+        .eq("is_read", false)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (dbNotif && dbNotif.body) {
+        try {
+          const parsed = typeof dbNotif.body === "string" ? JSON.parse(dbNotif.body) : dbNotif.body;
+          queuedMsg = {
+            line1: (parsed.line1 || dbNotif.title || "").slice(0, 16),
+            line2: (parsed.line2 || "").slice(0, 16),
+            ring_buzzer: Boolean(parsed.ringBuzzer ?? parsed.ring_buzzer),
+            duration_sec: parsed.durationSec || parsed.duration_sec || 15,
+          };
+          // Mark as processed in database
+          await supabase
+            .from("notifications")
+            .update({ is_read: true })
+            .eq("id", dbNotif.id);
+        } catch {}
+      }
+    } catch {}
+
+    // Fallback to in-memory store
+    if (!queuedMsg) {
+      const memMsg = deviceMessages.get(deviceKey);
+      if (memMsg) {
+        deviceMessages.delete(deviceKey);
+        queuedMsg = {
+          line1: memMsg.line1,
+          line2: memMsg.line2,
+          ring_buzzer: memMsg.ringBuzzer,
+          duration_sec: memMsg.durationSec,
+        };
+      }
     }
 
     return NextResponse.json({
       success: true,
       timestamp: now,
       message: "Heartbeat acknowledged",
-      custom_msg: queuedMessage
-        ? {
-            line1: queuedMessage.line1,
-            line2: queuedMessage.line2,
-            ring_buzzer: queuedMessage.ringBuzzer,
-            duration_sec: queuedMessage.durationSec,
-          }
-        : null,
+      custom_msg: queuedMsg,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Internal Server Error";

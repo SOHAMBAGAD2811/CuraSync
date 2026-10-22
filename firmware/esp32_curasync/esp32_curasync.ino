@@ -1,5 +1,5 @@
 /*
- * CuraSync ESP32 Firmware (v2.2)
+ * CuraSync ESP32 Firmware (v2.3)
  * -------------------------------------------------------------
  * Hardware:
  *   - ESP32 Development Board
@@ -9,12 +9,12 @@
  *   - 3x Indicator LEDs (Compartments 1, 2, 3 -> GPIO 18, 19, 23)
  *   - Buzzer (GPIO 26) - Supports both Active and Passive Buzzers!
  *
- * New Features:
- *   - Live LCD Remote Showcase: Displays custom messages sent from frontend
- *   - Instant Web Buzzer Ringing & Test Beep on Boot
- *   - Rapid 5-second Keepalive polling for real-time web interactivity
- *   - NTP Atomic Time Sync (IST UTC+5:30) with RTC calibration
- *   - Full offline fallback mode
+ * New in v2.3:
+ *   - Dual-Server Auto-Fallback: Seamless connection to Vercel HTTPS & local HTTP
+ *   - Fixed ESP32 HTTPClient WiFiClient requirement (no more dropped connections)
+ *   - Live LCD Status Diagnostics: Displays exact HTTP code on screen if failing
+ *   - Rapid 5-second polling with real-time text & buzzer trigger from web dashboard
+ *   - Universal Buzzer driver with boot test chirp
  */
 
 #include <Wire.h>
@@ -32,16 +32,20 @@
 const char* WIFI_SSID     = "Pande-2.4G";
 const char* WIFI_PASSWORD = "Ishaan@11";
 
-// Server URL:
-// - For local dev: "http://192.168.1.106:3000"
-// - For Vercel production: "https://curasync-iot.vercel.app"
-const char* SERVER_URL    = "http://192.168.1.106:3000";
+// Vercel Production Server (Recommended - works anywhere with zero router config):
+const char* CLOUD_SERVER_URL = "https://curasync-iot.vercel.app";
+
+// Local Development Server (when running 'next dev' on your laptop):
+const char* LOCAL_SERVER_URL = "http://192.168.1.106:3000";
+
+// Set to 'false' for Vercel Cloud (Recommended), or 'true' to prefer Local Dev:
+const bool PREFER_LOCAL_DEV = false;
 
 // Your verified Device Key from CuraSync (/device page)
 const char* DEVICE_KEY    = "cs_dev_aralnk0g_mvhwiq49";
 
 // Buzzer Type:
-// - Set 'false' for Passive Buzzer (uses tone/frequency) [DEFAULT]
+// - Set 'false' for Passive Buzzer (uses 2.4kHz tone frequency) [DEFAULT]
 // - Set 'true' for Active Buzzer (uses direct HIGH/LOW DC signal)
 const bool IS_ACTIVE_BUZZER = false;
 
@@ -94,6 +98,7 @@ const unsigned long KEEPALIVE_INTERVAL     = 5000UL;
 const unsigned long SCHEDULE_SYNC_INTERVAL = 300000UL;  // Sync schedule every 5 mins
 
 bool serverConnected = false;
+int lastHttpCode = 0;
 
 // Custom LCD message display state (dispatched from frontend)
 bool customMessageActive = false;
@@ -172,7 +177,7 @@ void syncTimeWithNTP() {
 }
 
 // -------------------------------------------------------------
-// NETWORK FUNCTIONS
+// NETWORK FUNCTIONS WITH AUTO-FALLBACK
 // -------------------------------------------------------------
 void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
@@ -201,31 +206,108 @@ void connectWiFi() {
   }
 }
 
+// Low-level HTTP POST with proper WiFiClient instance
+int doSinglePost(const String& fullUrl, const String& jsonBody, String& outResponse) {
+  HTTPClient http;
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+
+  bool beginOk = false;
+  if (fullUrl.startsWith("https://")) {
+    secureClient.setInsecure();
+    secureClient.setTimeout(5000);
+    beginOk = http.begin(secureClient, fullUrl);
+  } else {
+    plainClient.setTimeout(4000);
+    beginOk = http.begin(plainClient, fullUrl);
+  }
+
+  if (!beginOk) {
+    Serial.printf("[CuraSync] HTTPClient begin failed for: %s\n", fullUrl.c_str());
+    return -10;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-device-key", DEVICE_KEY);
+  http.setTimeout(5000);
+
+  int code = http.POST(jsonBody);
+  if (code > 0) {
+    outResponse = http.getString();
+  }
+  http.end();
+  return code;
+}
+
+// Low-level HTTP GET with proper WiFiClient instance
+int doSingleGet(const String& fullUrl, String& outResponse) {
+  HTTPClient http;
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+
+  bool beginOk = false;
+  if (fullUrl.startsWith("https://")) {
+    secureClient.setInsecure();
+    secureClient.setTimeout(5000);
+    beginOk = http.begin(secureClient, fullUrl);
+  } else {
+    plainClient.setTimeout(4000);
+    beginOk = http.begin(plainClient, fullUrl);
+  }
+
+  if (!beginOk) return -10;
+
+  http.addHeader("x-device-key", DEVICE_KEY);
+  http.setTimeout(5000);
+
+  int code = http.GET();
+  if (code > 0) {
+    outResponse = http.getString();
+  }
+  http.end();
+  return code;
+}
+
+// Dispatch POST with automatic local <-> cloud fallback
+int dispatchPost(const String& path, const String& jsonBody, String& outResponse) {
+  const char* primary = PREFER_LOCAL_DEV ? LOCAL_SERVER_URL : CLOUD_SERVER_URL;
+  const char* backup  = PREFER_LOCAL_DEV ? CLOUD_SERVER_URL : LOCAL_SERVER_URL;
+
+  int code = doSinglePost(String(primary) + path, jsonBody, outResponse);
+
+  // If primary unreachable (e.g. laptop asleep or AP isolation), use backup
+  if (code <= 0) {
+    Serial.printf("[CuraSync] Primary server failed (code %d). Trying fallback...\n", code);
+    code = doSinglePost(String(backup) + path, jsonBody, outResponse);
+  }
+  return code;
+}
+
+// Dispatch GET with automatic local <-> cloud fallback
+int dispatchGet(const String& pathAndQuery, String& outResponse) {
+  const char* primary = PREFER_LOCAL_DEV ? LOCAL_SERVER_URL : CLOUD_SERVER_URL;
+  const char* backup  = PREFER_LOCAL_DEV ? CLOUD_SERVER_URL : LOCAL_SERVER_URL;
+
+  int code = doSingleGet(String(primary) + pathAndQuery, outResponse);
+
+  if (code <= 0) {
+    Serial.printf("[CuraSync] Primary GET failed (code %d). Trying fallback...\n", code);
+    code = doSingleGet(String(backup) + pathAndQuery, outResponse);
+  }
+  return code;
+}
+
 // 1. Fetch Alarm Schedules from CuraSync
 void fetchScheduleFromCuraSync() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  HTTPClient http;
-  WiFiClientSecure secureClient;
+  String payload = "";
+  String query = "/api/device/schedule?key=" + String(DEVICE_KEY);
+  int httpCode = dispatchGet(query, payload);
 
-  String url = String(SERVER_URL) + "/api/device/schedule?key=" + String(DEVICE_KEY);
-  Serial.print("[CuraSync] Fetching schedules from: ");
-  Serial.println(url);
-
-  if (url.startsWith("https://")) {
-    secureClient.setInsecure();
-    http.begin(secureClient, url);
-  } else {
-    http.begin(url);
-  }
-
-  http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(6000);
-
-  int httpCode = http.GET();
   if (httpCode == HTTP_CODE_OK) {
     serverConnected = true;
-    String payload = http.getString();
+    lastHttpCode = httpCode;
     Serial.println("[CuraSync] Schedule synced from server:");
     Serial.println(payload);
 
@@ -252,41 +334,23 @@ void fetchScheduleFromCuraSync() {
       }
     }
   } else {
-    serverConnected = false;
+    lastHttpCode = httpCode;
     Serial.printf("[CuraSync] Schedule fetch failed, HTTP Code: %d\n", httpCode);
-    if (httpCode > 0) {
-      Serial.println(http.getString());
-    }
   }
-  http.end();
 }
 
 // 2. Send Keepalive Ping to CuraSync & Check for LCD Remote Messages
 void sendKeepalivePing() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  HTTPClient http;
-  WiFiClientSecure secureClient;
-
-  String url = String(SERVER_URL) + "/api/device/heartbeat";
-
-  if (url.startsWith("https://")) {
-    secureClient.setInsecure();
-    http.begin(secureClient, url);
-  } else {
-    http.begin(url);
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(4000);
-
+  String response = "";
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) + "\",\"status\":\"OK\"}";
-  int httpCode = http.POST(jsonBody);
+
+  int httpCode = dispatchPost("/api/device/heartbeat", jsonBody, response);
+  lastHttpCode = httpCode;
 
   if (httpCode == HTTP_CODE_OK) {
     serverConnected = true;
-    String response = http.getString();
 
     // Check if web dashboard sent a custom LCD message or buzzer command
     StaticJsonDocument<768> doc;
@@ -336,42 +400,26 @@ void sendKeepalivePing() {
     serverConnected = false;
     Serial.printf("[CuraSync] Ping failed, HTTP Code: %d\n", httpCode);
   }
-  http.end();
 }
 
 // 3. Send Compartment Opened Event to CuraSync
 void reportCompartmentEvent(int compartmentNumber) {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  HTTPClient http;
-  WiFiClientSecure secureClient;
-
-  String url = String(SERVER_URL) + "/api/device/event";
-
-  if (url.startsWith("https://")) {
-    secureClient.setInsecure();
-    http.begin(secureClient, url);
-  } else {
-    http.begin(url);
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(4000);
-
+  String response = "";
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) +
                     "\",\"event_type\":\"compartment_open\",\"compartment_number\":" +
                     String(compartmentNumber) + "}";
 
-  int httpCode = http.POST(jsonBody);
+  int httpCode = dispatchPost("/api/device/event", jsonBody, response);
   if (httpCode == HTTP_CODE_OK) {
     serverConnected = true;
-    String response = http.getString();
-    Serial.printf("[CuraSync] Event logged for Compartment %d: %s\n", compartmentNumber, response.c_str());
+    lastHttpCode = httpCode;
+    Serial.printf("[CuraSync] Event logged for Compartment %d\n", compartmentNumber);
   } else {
+    lastHttpCode = httpCode;
     Serial.printf("[CuraSync] Event post failed, HTTP Code: %d\n", httpCode);
   }
-  http.end();
 }
 
 // -------------------------------------------------------------
@@ -580,7 +628,13 @@ void loop() {
         if (serverConnected) {
           lcd.print("Online [Synced] ");
         } else if (WiFi.status() == WL_CONNECTED) {
-          lcd.print("WiFi Connected  ");
+          char statusBuf[17];
+          if (lastHttpCode != 0) {
+            snprintf(statusBuf, sizeof(statusBuf), "Err HTTP:%-7d", lastHttpCode);
+          } else {
+            snprintf(statusBuf, sizeof(statusBuf), "WiFi Conn (Wait)");
+          }
+          lcd.print(statusBuf);
         } else {
           lcd.print("Ready [Offline] ");
         }

@@ -7,13 +7,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     let { device_key, line1, line2, ring_buzzer, duration_sec } = body;
 
+    const { client: supabase } = await getDeviceSupabaseClient();
+
     if (!device_key) {
-      const { client: supabase } = await getDeviceSupabaseClient();
       const { data: userRes } = await supabase.auth.getUser();
       if (userRes?.user) {
         const { data: dev } = await supabase
           .from("devices")
-          .select("device_key")
+          .select("device_key, patient_id")
           .eq("patient_id", userRes.user.id)
           .maybeSingle();
         if (dev?.device_key) {
@@ -40,7 +41,29 @@ export async function POST(req: NextRequest) {
       timestamp: new Date().toISOString(),
     };
 
+    // 1. In-memory queue
     deviceMessages.set(device_key, messageData);
+
+    // 2. Persistent Supabase DB queue (accessible across all serverless Vercel lambdas & local)
+    try {
+      const { data: dev } = await supabase
+        .from("devices")
+        .select("patient_id")
+        .eq("device_key", device_key)
+        .maybeSingle();
+
+      if (dev?.patient_id) {
+        await supabase.from("notifications").insert({
+          patient_id: dev.patient_id,
+          type: "general",
+          title: trimmedLine1 || "LCD Remote Alert",
+          body: JSON.stringify(messageData),
+          is_read: false,
+        });
+      }
+    } catch (dbErr) {
+      console.warn("Could not persist message to notifications table:", dbErr);
+    }
 
     return NextResponse.json({
       success: true,
