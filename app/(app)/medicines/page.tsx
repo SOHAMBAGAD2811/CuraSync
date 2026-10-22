@@ -14,6 +14,8 @@ import {
   Cpu,
   Volume2,
   Sparkles,
+  Trash2,
+  AlertTriangle,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
@@ -37,6 +39,9 @@ export default function MedicinesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [testingMedId, setTestingMedId] = useState<string | null>(null);
+  const [editingMed, setEditingMed] = useState<MedicationWithSchedule | null>(null);
+  const [deletingMed, setDeletingMed] = useState<MedicationWithSchedule | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [deviceFeedback, setDeviceFeedback] = useState<{
     type: "success" | "error";
     text: string;
@@ -88,7 +93,36 @@ export default function MedicinesPage() {
     );
   };
 
-  const handleCreateMedication = async (e: React.FormEvent) => {
+  const handleOpenAddModal = () => {
+    setEditingMed(null);
+    setName("");
+    setDosage("");
+    setInstructions("");
+    setCompartment(1);
+    setTime("08:00");
+    setSelectedDays([0, 1, 2, 3, 4, 5, 6]);
+    setStartDate(new Date().toISOString().split("T")[0]);
+    setEndDate("");
+    setErrorMsg(null);
+    setModalOpen(true);
+  };
+
+  const handleOpenEditModal = (med: MedicationWithSchedule) => {
+    setEditingMed(med);
+    setName(med.name);
+    setDosage(med.dosage || "");
+    setInstructions(med.instructions || "");
+    const sched = med.schedules?.[0];
+    setCompartment(sched?.compartment_number || 1);
+    setTime(sched?.scheduled_time ? sched.scheduled_time.slice(0, 5) : "08:00");
+    setSelectedDays(sched?.days_of_week && sched.days_of_week.length > 0 ? sched.days_of_week : [0, 1, 2, 3, 4, 5, 6]);
+    setStartDate(med.start_date || new Date().toISOString().split("T")[0]);
+    setEndDate(med.end_date || "");
+    setErrorMsg(null);
+    setModalOpen(true);
+  };
+
+  const handleSubmitMedication = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
     if (selectedDays.length === 0) {
@@ -100,75 +134,181 @@ export default function MedicinesPage() {
     setErrorMsg(null);
 
     try {
-      // 1. Insert into medications
-      const { data: newMed, error: medError } = await supabase
-        .from("medications")
-        .insert({
-          patient_id: user.id,
-          name: name.trim(),
-          dosage: dosage.trim() || null,
-          instructions: instructions.trim() || null,
-          start_date: startDate,
-          end_date: endDate ? endDate : null,
-          is_active: true,
-        })
-        .select()
-        .single();
+      if (editingMed) {
+        // --- EDIT EXISTING MEDICATION ---
+        const { error: medError } = await supabase
+          .from("medications")
+          .update({
+            name: name.trim(),
+            dosage: dosage.trim() || null,
+            instructions: instructions.trim() || null,
+            start_date: startDate,
+            end_date: endDate ? endDate : null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", editingMed.id);
 
-      if (medError || !newMed) {
-        throw new Error(medError?.message || "Failed to create medication");
+        if (medError) throw new Error(medError.message);
+
+        const existingSched = editingMed.schedules?.[0];
+        if (existingSched) {
+          const { error: schedError } = await supabase
+            .from("medication_schedules")
+            .update({
+              compartment_number: compartment,
+              scheduled_time: time,
+              days_of_week: selectedDays,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", existingSched.id);
+
+          if (schedError) throw new Error(schedError.message);
+        } else {
+          const { error: schedError } = await supabase
+            .from("medication_schedules")
+            .insert({
+              patient_id: user.id,
+              medication_id: editingMed.id,
+              compartment_number: compartment,
+              scheduled_time: time,
+              days_of_week: selectedDays,
+              is_active: true,
+            });
+
+          if (schedError) throw new Error(schedError.message);
+        }
+
+        // Sync dose occurrences
+        await syncTodayDoseOccurrences(user.id);
+
+        // Notify ESP32 hardware
+        try {
+          await fetch("/api/device/message", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              line1: `MED UPDATED:`,
+              line2: `C${compartment}: ${name.toUpperCase().slice(0, 12)}`,
+              ring_buzzer: true,
+              duration_sec: 8,
+            }),
+          });
+        } catch {}
+
+        setDeviceFeedback({
+          type: "success",
+          text: `Prescription "${name}" updated and re-assigned to Bay ${compartment}. ESP32 synchronized.`,
+        });
+      } else {
+        // --- CREATE NEW MEDICATION ---
+        const { data: newMed, error: medError } = await supabase
+          .from("medications")
+          .insert({
+            patient_id: user.id,
+            name: name.trim(),
+            dosage: dosage.trim() || null,
+            instructions: instructions.trim() || null,
+            start_date: startDate,
+            end_date: endDate ? endDate : null,
+            is_active: true,
+          })
+          .select()
+          .single();
+
+        if (medError || !newMed) {
+          throw new Error(medError?.message || "Failed to create medication");
+        }
+
+        const { error: schedError } = await supabase
+          .from("medication_schedules")
+          .insert({
+            patient_id: user.id,
+            medication_id: newMed.id,
+            compartment_number: compartment,
+            scheduled_time: time,
+            days_of_week: selectedDays,
+            is_active: true,
+          });
+
+        if (schedError) throw new Error(schedError.message);
+
+        await syncTodayDoseOccurrences(user.id);
+
+        try {
+          await fetch("/api/device/message", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              line1: `MED ADDED: ${name.toUpperCase().slice(0, 5)}`,
+              line2: `BAY ${compartment}: ${time}`,
+              ring_buzzer: true,
+              duration_sec: 8,
+            }),
+          });
+        } catch {}
+
+        setDeviceFeedback({
+          type: "success",
+          text: `Medication "${name}" saved and assigned to Bay ${compartment}. ESP32 synchronized.`,
+        });
       }
 
-      // 2. Insert into medication_schedules
-      const { error: schedError } = await supabase
-        .from("medication_schedules")
-        .insert({
-          patient_id: user.id,
-          medication_id: newMed.id,
-          compartment_number: compartment,
-          scheduled_time: time,
-          days_of_week: selectedDays,
-          is_active: true,
-        });
-
-      if (schedError) {
-        throw new Error(schedError.message);
-      }
-
-      // 3. Automatically synchronize today's dose occurrences
-      await syncTodayDoseOccurrences(user.id);
-
-      // 4. Notify physical ESP32 display about the newly configured bay
-      try {
-        await fetch("/api/device/message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            line1: `MED ADDED: ${name.toUpperCase().slice(0, 5)}`,
-            line2: `BAY ${compartment}: ${time}`,
-            ring_buzzer: true,
-            duration_sec: 8,
-          }),
-        });
-      } catch {}
-
-      // Reset form & reload
-      setName("");
-      setDosage("");
-      setInstructions("");
-      setCompartment(1);
-      setTime("08:00");
-      setSelectedDays([0, 1, 2, 3, 4, 5, 6]);
       setModalOpen(false);
-      setDeviceFeedback({
-        type: "success",
-        text: `Medication "${name}" saved and assigned to Bay ${compartment}. ESP32 will synchronize automatically.`,
-      });
+      setEditingMed(null);
       fetchMedications();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Error saving medication");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteMedication = async () => {
+    if (!deletingMed || !user) return;
+    setDeleting(true);
+
+    try {
+      const schedIds = deletingMed.schedules?.map((s) => s.id) || [];
+      if (schedIds.length > 0) {
+        // 1. Delete associated dose occurrences
+        await supabase.from("dose_occurrences").delete().in("schedule_id", schedIds);
+        // 2. Delete medication schedules
+        await supabase.from("medication_schedules").delete().in("id", schedIds);
+      }
+      // 3. Delete medication record
+      const { error } = await supabase.from("medications").delete().eq("id", deletingMed.id);
+      if (error) throw new Error(error.message);
+
+      await syncTodayDoseOccurrences(user.id);
+
+      const compNum = deletingMed.schedules?.[0]?.compartment_number || 1;
+      try {
+        await fetch("/api/device/message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            line1: `MED DELETED`,
+            line2: `BAY ${compNum} CLEARED`,
+            ring_buzzer: false,
+            duration_sec: 6,
+          }),
+        });
+      } catch {}
+
+      setDeviceFeedback({
+        type: "success",
+        text: `Prescription "${deletingMed.name}" deleted and Bay ${compNum} unassigned.`,
+      });
+
+      setDeletingMed(null);
+      fetchMedications();
+    } catch (err: unknown) {
+      setDeviceFeedback({
+        type: "error",
+        text: err instanceof Error ? err.message : "Failed to delete medication",
+      });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -246,11 +386,8 @@ export default function MedicinesPage() {
           </p>
         </div>
         <button
-          onClick={() => {
-            setErrorMsg(null);
-            setModalOpen(true);
-          }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-sky-500 text-white text-sm font-semibold rounded-xl hover:bg-sky-600 transition-colors shadow-sm"
+          onClick={handleOpenAddModal}
+          className="flex items-center gap-2 px-4 py-2.5 bg-sky-500 text-white text-sm font-semibold rounded-xl hover:bg-sky-600 transition-colors shadow-sm cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           Add medicine
@@ -383,8 +520,8 @@ export default function MedicinesPage() {
             Add your prescriptions and assign them to physical compartments 1, 2, or 3.
           </p>
           <button
-            onClick={() => setModalOpen(true)}
-            className="mt-4 px-4 py-2 bg-sky-500 text-white text-sm font-medium rounded-lg hover:bg-sky-600"
+            onClick={handleOpenAddModal}
+            className="mt-4 px-4 py-2 bg-sky-500 text-white text-sm font-medium rounded-lg hover:bg-sky-600 cursor-pointer"
           >
             Add first medicine
           </button>
@@ -468,7 +605,7 @@ export default function MedicinesPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-1.5 flex-shrink-0">
                   {med.is_active && (
                     <button
                       onClick={() => handleTriggerMedicationAlert(med)}
@@ -485,16 +622,36 @@ export default function MedicinesPage() {
                       <span className="sm:hidden">Test</span>
                     </button>
                   )}
+
+                  {/* Edit Button */}
+                  <button
+                    onClick={() => handleOpenEditModal(med)}
+                    className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-sky-50 text-slate-500 hover:text-sky-600 hover:border-sky-200 transition-all cursor-pointer shadow-2xs"
+                    title="Edit Prescription & Schedule"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+
+                  {/* Toggle Active Button */}
                   <button
                     onClick={() => handleToggleActive(med)}
-                    className={`p-2 rounded-lg border transition-colors cursor-pointer ${
+                    className={`p-2 rounded-lg border transition-colors cursor-pointer shadow-2xs ${
                       med.is_active
-                        ? "text-slate-500 hover:text-red-600 hover:bg-red-50 border-slate-200"
-                        : "text-emerald-600 hover:bg-emerald-50 border-emerald-200"
+                        ? "text-slate-500 hover:text-amber-600 hover:bg-amber-50 border-slate-200 bg-white"
+                        : "text-emerald-600 hover:bg-emerald-50 border-emerald-200 bg-emerald-50/50"
                     }`}
                     title={med.is_active ? "Deactivate" : "Activate"}
                   >
                     <PowerOff className="w-4 h-4" />
+                  </button>
+
+                  {/* Delete Button */}
+                  <button
+                    onClick={() => setDeletingMed(med)}
+                    className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-red-50 text-slate-400 hover:text-red-600 hover:border-red-200 transition-all cursor-pointer shadow-2xs"
+                    title="Delete Prescription"
+                  >
+                    <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -503,29 +660,43 @@ export default function MedicinesPage() {
         </div>
       )}
 
-      {/* Add Medicine Modal */}
+      {/* Add / Edit Medicine Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl space-y-5 overflow-y-auto max-h-[90vh]">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h2 className="text-lg font-bold text-slate-900">
-                Add New Medication
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                {editingMed ? (
+                  <>
+                    <Pencil className="w-5 h-5 text-sky-600" />
+                    <span>Edit Prescription & Schedule</span>
+                  </>
+                ) : (
+                  <>
+                    <Plus className="w-5 h-5 text-sky-600" />
+                    <span>Add New Medication</span>
+                  </>
+                )}
               </h2>
               <button
-                onClick={() => setModalOpen(false)}
-                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400"
+                onClick={() => {
+                  setModalOpen(false);
+                  setEditingMed(null);
+                }}
+                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {errorMsg && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
-                {errorMsg}
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                <span>{errorMsg}</span>
               </div>
             )}
 
-            <form onSubmit={handleCreateMedication} className="space-y-4">
+            <form onSubmit={handleSubmitMedication} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Medicine Name *
@@ -555,7 +726,7 @@ export default function MedicinesPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                    Compartment *
+                    Hardware Compartment *
                   </label>
                   <select
                     value={compartment}
@@ -564,9 +735,9 @@ export default function MedicinesPage() {
                     }
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-sky-500 bg-white"
                   >
-                    <option value={1}>Compartment 1 (Red LED • GPIO 18)</option>
-                    <option value={2}>Compartment 2 (Green LED • GPIO 19)</option>
-                    <option value={3}>Compartment 3 (White LED • GPIO 23)</option>
+                    <option value={1}>Bay 1 (Red LED • GPIO 18)</option>
+                    <option value={2}>Bay 2 (Green LED • GPIO 19)</option>
+                    <option value={3}>Bay 3 (White LED • GPIO 23)</option>
                   </select>
                 </div>
               </div>
@@ -623,9 +794,9 @@ export default function MedicinesPage() {
                         key={d}
                         type="button"
                         onClick={() => handleToggleDay(idx)}
-                        className={`py-1.5 text-xs font-medium rounded-lg border transition-all ${
+                        className={`py-1.5 text-xs font-medium rounded-lg border transition-all cursor-pointer ${
                           active
-                            ? "bg-sky-500 text-white border-sky-500"
+                            ? "bg-sky-500 text-white border-sky-500 shadow-2xs font-semibold"
                             : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
                         }`}
                       >
@@ -636,30 +807,108 @@ export default function MedicinesPage() {
                 </div>
               </div>
 
-              <div className="pt-2 flex justify-end gap-3">
+              <div className="pt-2 flex justify-end gap-3 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-4 py-2 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50"
+                  onClick={() => {
+                    setModalOpen(false);
+                    setEditingMed(null);
+                  }}
+                  className="px-4 py-2 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="flex items-center gap-2 px-5 py-2 bg-sky-500 text-white text-sm font-semibold rounded-lg hover:bg-sky-600 disabled:opacity-60"
+                  className="flex items-center gap-2 px-5 py-2 bg-sky-500 text-white text-sm font-semibold rounded-lg hover:bg-sky-600 disabled:opacity-60 cursor-pointer shadow-xs"
                 >
                   {submitting ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      Saving...
+                      <span>{editingMed ? "Saving..." : "Creating..."}</span>
                     </>
                   ) : (
-                    "Save Medicine"
+                    <span>{editingMed ? "Save Changes" : "Save Medicine"}</span>
                   )}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deletingMed && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-xl bg-red-100 text-red-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Delete Prescription?
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Are you sure you want to remove this medication?
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-700">Medicine:</span>
+                <span className="font-bold text-slate-900">{deletingMed.name}</span>
+              </div>
+              {deletingMed.dosage && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Dosage:</span>
+                  <span className="text-slate-700">{deletingMed.dosage}</span>
+                </div>
+              )}
+              {deletingMed.schedules?.[0] && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Hardware Bay:</span>
+                  <span className="font-semibold text-slate-800">
+                    Compartment {deletingMed.schedules[0].compartment_number}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-slate-500">
+              This action will unassign the dispenser compartment, clear upcoming dose alarms, and remove the prescription record permanently.
+            </p>
+
+            <div className="pt-2 flex justify-end gap-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDeletingMed(null)}
+                disabled={deleting}
+                className="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteMedication}
+                disabled={deleting}
+                className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg transition-all cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Prescription</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

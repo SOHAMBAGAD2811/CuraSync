@@ -25,7 +25,6 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <time.h>
-#include "driver/gpio.h"
 
 // =============================================================
 // USER CONFIGURATION
@@ -46,7 +45,7 @@ const bool PREFER_LOCAL_DEV = false;
 const char* DEVICE_KEY    = "cs_dev_aralnk0g_mvhwiq49";
 
 // Buzzer Configuration:
-// - Set 'false' for Passive Buzzer (uses clean single 2400Hz tone with max 40mA GPIO drive) [DEFAULT]
+// - Set 'false' for Passive Buzzer (uses clean 2400Hz tone) [DEFAULT]
 // - Set 'true' for Active Buzzer (uses pure DC HIGH for full 85dB volume)
 const bool IS_ACTIVE_BUZZER = false;
 
@@ -62,6 +61,10 @@ const char* NTP_SERVER_2        = "time.google.com";
 
 RTC_DS3231 rtc;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Reusable Global Network Clients (Prevents stack overflow & watchdog resets)
+WiFiClient plainClient;
+WiFiClientSecure secureClient;
 
 // Hardware pin assignments
 const int reedPins[3] = {32, 33, 25};
@@ -176,7 +179,8 @@ void syncTimeWithNTP() {
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER_1, NTP_SERVER_2);
 
   struct tm timeinfo;
-  if (getLocalTime(&timeinfo, 8000)) {
+  // 1200ms short timeout prevents watchdog resets on routers blocking NTP UDP port
+  if (getLocalTime(&timeinfo, 1200)) {
     Serial.println("[CuraSync] Exact NTP time acquired!");
     rtc.adjust(DateTime(timeinfo.tm_year + 1900,
                         timeinfo.tm_mon + 1,
@@ -189,7 +193,7 @@ void syncTimeWithNTP() {
                   timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                   timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
   } else {
-    Serial.println("[CuraSync] Warning: NTP timed out. Running on existing hardware RTC.");
+    Serial.println("[CuraSync] NTP skipped. Running smoothly on DS3231 hardware RTC.");
   }
 }
 
@@ -223,19 +227,17 @@ void connectWiFi() {
   }
 }
 
-// Low-level HTTP POST with proper WiFiClient instance
+// Low-level HTTP POST using reusable global client
 int doSinglePost(const String& fullUrl, const String& jsonBody, String& outResponse) {
   HTTPClient http;
-  WiFiClient plainClient;
-  WiFiClientSecure secureClient;
 
   bool beginOk = false;
   if (fullUrl.startsWith("https://")) {
     secureClient.setInsecure();
-    secureClient.setTimeout(5000);
+    secureClient.setTimeout(3000);
     beginOk = http.begin(secureClient, fullUrl);
   } else {
-    plainClient.setTimeout(4000);
+    plainClient.setTimeout(3000);
     beginOk = http.begin(plainClient, fullUrl);
   }
 
@@ -246,7 +248,7 @@ int doSinglePost(const String& fullUrl, const String& jsonBody, String& outRespo
 
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(5000);
+  http.setTimeout(3000);
 
   int code = http.POST(jsonBody);
   if (code > 0) {
@@ -256,26 +258,24 @@ int doSinglePost(const String& fullUrl, const String& jsonBody, String& outRespo
   return code;
 }
 
-// Low-level HTTP GET with proper WiFiClient instance
+// Low-level HTTP GET using reusable global client
 int doSingleGet(const String& fullUrl, String& outResponse) {
   HTTPClient http;
-  WiFiClient plainClient;
-  WiFiClientSecure secureClient;
 
   bool beginOk = false;
   if (fullUrl.startsWith("https://")) {
     secureClient.setInsecure();
-    secureClient.setTimeout(5000);
+    secureClient.setTimeout(3000);
     beginOk = http.begin(secureClient, fullUrl);
   } else {
-    plainClient.setTimeout(4000);
+    plainClient.setTimeout(3000);
     beginOk = http.begin(plainClient, fullUrl);
   }
 
   if (!beginOk) return -10;
 
   http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(5000);
+  http.setTimeout(3000);
 
   int code = http.GET();
   if (code > 0) {
@@ -466,10 +466,9 @@ void setup() {
     previousOpen[i] = (digitalRead(reedPins[i]) == OPEN_STATE);
   }
 
-  // Setup Buzzer pin with maximum current drive (40mA)
+  // Setup Buzzer pin
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
-  gpio_set_drive_capability((gpio_num_t)buzzerPin, GPIO_DRIVE_CAP_3);
 
   // Quick startup single beep self-test (clean, solid tone)
   Serial.println("[CuraSync] Buzzer startup self-test...");
