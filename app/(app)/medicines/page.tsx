@@ -10,6 +10,10 @@ import {
   Loader2,
   X,
   Check,
+  Radio,
+  Cpu,
+  Volume2,
+  Sparkles,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
@@ -32,6 +36,11 @@ export default function MedicinesPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [testingMedId, setTestingMedId] = useState<string | null>(null);
+  const [deviceFeedback, setDeviceFeedback] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   // Form states
   const [name, setName] = useState("");
@@ -129,6 +138,20 @@ export default function MedicinesPage() {
       // 3. Automatically synchronize today's dose occurrences
       await syncTodayDoseOccurrences(user.id);
 
+      // 4. Notify physical ESP32 display about the newly configured bay
+      try {
+        await fetch("/api/device/message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            line1: `MED ADDED: ${name.toUpperCase().slice(0, 5)}`,
+            line2: `BAY ${compartment}: ${time}`,
+            ring_buzzer: true,
+            duration_sec: 8,
+          }),
+        });
+      } catch {}
+
       // Reset form & reload
       setName("");
       setDosage("");
@@ -137,11 +160,61 @@ export default function MedicinesPage() {
       setTime("08:00");
       setSelectedDays([0, 1, 2, 3, 4, 5, 6]);
       setModalOpen(false);
+      setDeviceFeedback({
+        type: "success",
+        text: `Medication "${name}" saved and assigned to Bay ${compartment}. ESP32 will synchronize automatically.`,
+      });
       fetchMedications();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Error saving medication");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleTriggerMedicationAlert = async (med: MedicationWithSchedule) => {
+    setTestingMedId(med.id);
+    setDeviceFeedback(null);
+
+    const sched = med.schedules?.[0];
+    const compNum = sched?.compartment_number || 1;
+    const medUpper = med.name.toUpperCase();
+    const dosageUpper = (med.dosage || "").toUpperCase();
+
+    const line1 = `TAKE ${medUpper.slice(0, 10)}!`.slice(0, 16);
+    const line2 = `BAY ${compNum} - ${dosageUpper || "DOSE DUE"}`.slice(0, 16);
+
+    try {
+      const res = await fetch("/api/device/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          line1,
+          line2,
+          ring_buzzer: true,
+          duration_sec: 15,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setDeviceFeedback({
+          type: "success",
+          text: `Dose alert dispatched to ESP32! Bay ${compNum} will alert, LCD will showcase "${line1}", and buzzer will ring.`,
+        });
+      } else {
+        setDeviceFeedback({
+          type: "error",
+          text: data.error || "Failed to dispatch alert to ESP32.",
+        });
+      }
+    } catch {
+      setDeviceFeedback({
+        type: "error",
+        text: "Network error sending dose alert to ESP32.",
+      });
+    } finally {
+      setTestingMedId(null);
     }
   };
 
@@ -182,6 +255,118 @@ export default function MedicinesPage() {
           <Plus className="w-4 h-4" />
           Add medicine
         </button>
+      </div>
+
+      {/* Device Feedback Notification */}
+      {deviceFeedback && (
+        <div
+          className={`p-3.5 rounded-xl text-xs font-medium border flex items-start justify-between gap-3 ${
+            deviceFeedback.type === "success"
+              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+              : "bg-red-50 text-red-800 border-red-200"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {deviceFeedback.type === "success" ? (
+              <Check className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            ) : (
+              <span className="w-4 h-4 text-red-600 flex-shrink-0 font-bold">!</span>
+            )}
+            <span>{deviceFeedback.text}</span>
+          </div>
+          <button
+            onClick={() => setDeviceFeedback(null)}
+            className="text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Hardware Dispenser Bay Mapping Overview */}
+      <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl p-5 text-white shadow-md space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+          <div className="flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-sky-400" />
+            <h3 className="text-sm font-bold tracking-wide">
+              ESP32 Physical Dispenser Bay Assignment
+            </h3>
+          </div>
+          <span className="text-[11px] text-emerald-400 bg-emerald-950/60 border border-emerald-800/80 px-2.5 py-0.5 rounded-full font-mono flex items-center gap-1 self-start sm:self-auto">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            Hardware Synced
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+          {[1, 2, 3].map((compNum) => {
+            const found = meds.find(
+              (m) =>
+                m.is_active &&
+                m.schedules?.some((s) => s.compartment_number === compNum)
+            );
+            const sched = found?.schedules?.find(
+              (s) => s.compartment_number === compNum
+            );
+            const ledColor =
+              compNum === 1
+                ? "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]"
+                : compNum === 2
+                ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
+                : "bg-white shadow-[0_0_10px_rgba(255,255,255,0.8)]";
+
+            return (
+              <div
+                key={compNum}
+                className="bg-slate-800/90 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between gap-2"
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-200">
+                      Bay {compNum}
+                    </span>
+                    <span className="flex items-center gap-1 text-[11px] text-slate-400 font-mono">
+                      <span className={`w-2 h-2 rounded-full ${ledColor}`} />
+                      {compNum === 1 ? "Red" : compNum === 2 ? "Green" : "White"} LED
+                    </span>
+                  </div>
+
+                  <div className="mt-2 min-h-[38px]">
+                    {found ? (
+                      <div>
+                        <div className="text-xs font-bold text-sky-300 truncate">
+                          {found.name}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {found.dosage || "1 dose"} · {sched?.scheduled_time.slice(0, 5) || "08:00"}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500 italic py-1">
+                        Unassigned (Empty Bay)
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {found && (
+                  <button
+                    onClick={() => handleTriggerMedicationAlert(found)}
+                    disabled={testingMedId === found.id}
+                    className="w-full mt-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-[11px] font-semibold text-slate-100 rounded-lg border border-slate-600 transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {testingMedId === found.id ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Volume2 className="w-3 h-3 text-sky-400" />
+                    )}
+                    <span>Trigger Alert</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {loading ? (
@@ -284,9 +469,25 @@ export default function MedicinesPage() {
                 </div>
 
                 <div className="flex items-center gap-2 flex-shrink-0">
+                  {med.is_active && (
+                    <button
+                      onClick={() => handleTriggerMedicationAlert(med)}
+                      disabled={testingMedId === med.id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-semibold rounded-lg border border-sky-200 transition-colors cursor-pointer disabled:opacity-50"
+                      title="Showcase this medicine on physical ESP32 LCD & ring buzzer"
+                    >
+                      {testingMedId === med.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Radio className="w-3.5 h-3.5 text-sky-600" />
+                      )}
+                      <span className="hidden sm:inline">Test on Dispenser</span>
+                      <span className="sm:hidden">Test</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => handleToggleActive(med)}
-                    className={`p-2 rounded-lg border transition-colors ${
+                    className={`p-2 rounded-lg border transition-colors cursor-pointer ${
                       med.is_active
                         ? "text-slate-500 hover:text-red-600 hover:bg-red-50 border-slate-200"
                         : "text-emerald-600 hover:bg-emerald-50 border-emerald-200"

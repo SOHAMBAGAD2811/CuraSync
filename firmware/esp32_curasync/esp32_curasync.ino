@@ -68,6 +68,7 @@ const int buzzerPin   = 26;
 int alarmHour[3]    = {8, 13, 20};
 int alarmMinute[3]  = {0, 0, 0};
 bool alarmActive[3] = {true, true, true};
+char alarmMedName[3][17] = {"Citafil", "Medication 2", "Medication 3"};
 
 const int OPEN_STATE = LOW;
 
@@ -93,9 +94,9 @@ unsigned long lastLcdUpdate         = 0;
 unsigned long lastKeepalivePing     = 0;
 unsigned long lastScheduleSync      = 0;
 
-// Poll server every 5 seconds for rapid web message responsiveness
+// Rapid polling: Ping server every 5s, re-sync medication schedules every 30s
 const unsigned long KEEPALIVE_INTERVAL     = 5000UL;
-const unsigned long SCHEDULE_SYNC_INTERVAL = 300000UL;  // Sync schedule every 5 mins
+const unsigned long SCHEDULE_SYNC_INTERVAL = 30000UL;
 
 bool serverConnected = false;
 int lastHttpCode = 0;
@@ -325,9 +326,14 @@ void fetchScheduleFromCuraSync() {
           if (active) {
             alarmHour[idx]   = a["hour"];
             alarmMinute[idx] = a["minute"];
+            const char* mName = a["name"] | "Medication";
+            strncpy(alarmMedName[idx], mName, 16);
+            alarmMedName[idx][16] = '\0';
             Serial.printf("[CuraSync] C%d Alarm Set: %02d:%02d (%s)\n",
-                          compNum, alarmHour[idx], alarmMinute[idx], (const char*)a["name"]);
+                          compNum, alarmHour[idx], alarmMinute[idx], alarmMedName[idx]);
           } else {
+            strncpy(alarmMedName[idx], "Empty Bay", 16);
+            alarmMedName[idx][16] = '\0';
             Serial.printf("[CuraSync] C%d: No active doses scheduled.\n", compNum);
           }
         }
@@ -532,6 +538,13 @@ void loop() {
         if (buzzerActive && buzzerCompartment == i) {
           stopBuzzer();
         }
+
+        // Showcase dose confirmation on LCD for 4 seconds
+        customMessageActive = true;
+        customMessageStart = millis();
+        customMessageDuration = 4000UL;
+        snprintf(customLine1, sizeof(customLine1), "%-16s", "DOSE TAKEN! OK ");
+        snprintf(customLine2, sizeof(customLine2), "C%d:%-13s", i + 1, alarmMedName[i]);
       }
     }
 
@@ -639,9 +652,10 @@ void loop() {
           lcd.print("Ready [Offline] ");
         }
       } else {
-        lcd.print("DOSE DUE: C");
-        lcd.print(firstPending + 1);
-        lcd.print("    ");
+        // DOSE IS DUE: Showcase medicine name and bay from /medicines
+        char doseLine[17];
+        snprintf(doseLine, sizeof(doseLine), "C%d:%-13s", firstPending + 1, alarmMedName[firstPending]);
+        lcd.print(doseLine);
       }
     }
   }
