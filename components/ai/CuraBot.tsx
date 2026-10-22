@@ -18,7 +18,7 @@ interface Message {
   id: string;
   role: "user" | "bot";
   text: string;
-  timestamp: Date;
+  timeStr: string;
   deviceAction?: string | null;
 }
 
@@ -37,7 +37,7 @@ export function CuraBot() {
       id: "welcome",
       role: "bot",
       text: "👋 Hi! I'm CuraBot, your AI health assistant. Ask me about your medicines, today's doses, drug interactions, or I can trigger your dispenser alerts!",
-      timestamp: new Date(),
+      timeStr: "Just now",
     },
   ]);
   const [input, setInput] = useState("");
@@ -45,6 +45,12 @@ export function CuraBot() {
   const [hasNew, setHasNew] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const getNowTimeStr = () =>
+    new Date().toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
   useEffect(() => {
     if (open) {
@@ -67,7 +73,7 @@ export function CuraBot() {
         id: `user-${Date.now()}`,
         role: "user",
         text: text.trim(),
-        timestamp: new Date(),
+        timeStr: getNowTimeStr(),
       };
       setMessages((prev) => [...prev, userMsg]);
       setInput("");
@@ -86,7 +92,7 @@ export function CuraBot() {
           id: `bot-${Date.now()}`,
           role: "bot",
           text: data.reply || data.error || "Sorry, I couldn't process that request.",
-          timestamp: new Date(),
+          timeStr: getNowTimeStr(),
           deviceAction: data.deviceAction || null,
         };
         setMessages((prev) => [...prev, botMsg]);
@@ -99,7 +105,7 @@ export function CuraBot() {
             id: `err-${Date.now()}`,
             role: "bot",
             text: "Connection error. Please try again.",
-            timestamp: new Date(),
+            timeStr: getNowTimeStr(),
           },
         ]);
       } finally {
@@ -210,10 +216,7 @@ export function CuraBot() {
                       msg.role === "user" ? "text-white/60 text-right" : "text-slate-400"
                     }`}
                   >
-                    {msg.timestamp.toLocaleTimeString("en-IN", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {msg.timeStr}
                   </p>
                 </div>
               </div>
