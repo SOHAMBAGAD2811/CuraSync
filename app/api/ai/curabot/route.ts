@@ -1,0 +1,152 @@
+import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { getDeviceSupabaseClient } from "@/lib/supabase/device";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+
+export async function POST(req: NextRequest) {
+  try {
+    const { message, userId } = await req.json();
+
+    if (!message) {
+      return NextResponse.json({ error: "No message provided" }, { status: 400 });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return NextResponse.json(
+        { error: "Gemini API key not configured" },
+        { status: 503 }
+      );
+    }
+
+    // Fetch patient context from Supabase
+    const { client: supabase } = await getDeviceSupabaseClient();
+
+    let patientContext = "";
+    let deviceKey = "";
+
+    if (userId) {
+      // Fetch medications
+      const { data: medications } = await supabase
+        .from("medications")
+        .select("*, medication_schedules(*)")
+        .eq("patient_id", userId)
+        .eq("is_active", true);
+
+      // Fetch today's doses
+      const todayDate = new Date().toISOString().split("T")[0];
+      const { data: doses } = await supabase
+        .from("dose_occurrences")
+        .select("*, medication_schedules(*, medications(*))")
+        .eq("patient_id", userId)
+        .gte("due_at", `${todayDate}T00:00:00Z`)
+        .lte("due_at", `${todayDate}T23:59:59Z`)
+        .order("due_at", { ascending: true });
+
+      // Fetch device
+      const { data: device } = await supabase
+        .from("devices")
+        .select("device_key, label, last_heartbeat_at")
+        .eq("patient_id", userId)
+        .maybeSingle();
+
+      if (device?.device_key) deviceKey = device.device_key;
+
+      // Build context
+      const medList = medications?.map((m: any) => {
+        const sched = m.medication_schedules?.[0];
+        return `- ${m.name}${m.dosage ? ` (${m.dosage})` : ""} → Bay ${sched?.compartment_number || "?"} at ${sched?.scheduled_time?.slice(0, 5) || "?"} ${sched?.days_of_week?.length === 7 ? "daily" : "selected days"}${m.instructions ? ` | Note: ${m.instructions}` : ""}`;
+      }).join("\n") || "No active medications";
+
+      const doseList = doses?.map((d: any) => {
+        const sched = d.medication_schedules as any;
+        const med = sched?.medications;
+        const dueTime = new Date(d.due_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+        return `- ${med?.name || "Unknown"} at ${dueTime}: ${d.status} ${d.acknowledged_at ? `(taken at ${new Date(d.acknowledged_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })})` : ""}`;
+      }).join("\n") || "No doses today";
+
+      const deviceStatus = device
+        ? `Device: ${device.label || "CuraSync Dispenser"}, Last seen: ${device.last_heartbeat_at ? new Date(device.last_heartbeat_at).toLocaleTimeString() : "Never"}`
+        : "No device connected";
+
+      patientContext = `
+PATIENT CONTEXT:
+Active Medications:
+${medList}
+
+Today's Dose Schedule:
+${doseList}
+
+${deviceStatus}
+Current time: ${new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" })} IST
+`;
+    }
+
+    // Check if user wants to trigger a device alert
+    const triggerAlertMatch = message.toLowerCase().match(/trigger.*(alert|alarm|buzzer).*(bay\s*)?([123])/i) ||
+      message.toLowerCase().match(/(ring|buzz|alert).*(bay\s*)?([123])/i);
+    
+    let deviceAction = null;
+    if (triggerAlertMatch && deviceKey && userId) {
+      const bayNum = parseInt(triggerAlertMatch[3] || "1");
+      try {
+        const alertRes = await fetch(
+          `${process.env.NEXT_PUBLIC_SUPABASE_URL ? "http://localhost:3000" : ""}/api/device/message`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              device_key: deviceKey,
+              line1: `CURABOT ALERT`,
+              line2: `BAY ${bayNum} - TAKE MED`,
+              ring_buzzer: true,
+              duration_sec: 10,
+            }),
+          }
+        );
+        if (alertRes.ok) {
+          deviceAction = `bay_alert_triggered:${bayNum}`;
+        }
+      } catch {}
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash-lite" });
+
+    const systemPrompt = `You are CuraBot, CuraSync's friendly AI health assistant for an elderly patient's smart pill dispenser system. You have access to the patient's live medication data.
+
+${patientContext}
+
+Your capabilities:
+1. Answer questions about medications, timing, adherence
+2. Provide drug safety information (food interactions, side effects)
+3. Help interpret adherence patterns
+4. Trigger physical device alerts (when explicitly asked to "trigger alert on Bay X" or "ring Bay X")
+5. Give encouragement and reminders
+
+${deviceAction ? `\n✅ ACTION TAKEN: I've successfully triggered an alert on ${deviceAction.replace("bay_alert_triggered:", "Bay ")}!\n` : ""}
+
+Guidelines:
+- Be warm, simple, and patient-friendly (elderly users)
+- Respond in 2-4 sentences max unless explaining something complex
+- Always recommend consulting a doctor for medical decisions
+- Use the patient's actual medication data in your answers
+- If asked about interactions, give brief practical advice
+- Do NOT diagnose or prescribe
+- Format: plain text (no markdown headers, no bullet lists unless listing meds)`;
+
+    const result = await model.generateContent(`${systemPrompt}\n\nUser asks: ${message}`);
+    const reply = result.response.text().trim();
+
+    return NextResponse.json({
+      success: true,
+      reply,
+      deviceAction,
+    });
+  } catch (error: any) {
+    console.error("CuraBot error:", error);
+    return NextResponse.json(
+      { error: error?.message || "CuraBot encountered an error" },
+      { status: 500 }
+    );
+  }
+}

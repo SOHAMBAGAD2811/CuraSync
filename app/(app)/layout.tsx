@@ -1,5 +1,6 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { MobileNav } from "@/components/layout/MobileNav";
+import { CuraBot } from "@/components/ai/CuraBot";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -21,6 +22,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+
+      {/* CuraBot — floating AI assistant on all app pages */}
+      <CuraBot />
     </div>
   );
 }

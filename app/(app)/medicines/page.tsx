@@ -21,6 +21,8 @@ import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
 import { syncTodayDoseOccurrences } from "@/lib/doses";
 import type { Database, CompartmentNumber } from "@/lib/types/database";
+import { PrescriptionScanner } from "@/components/ai/PrescriptionScanner";
+import { DrugInteractionShield } from "@/components/ai/DrugInteractionShield";
 
 type Medication = Database["public"]["Tables"]["medications"]["Row"];
 type Schedule = Database["public"]["Tables"]["medication_schedules"]["Row"];
@@ -376,22 +378,56 @@ export default function MedicinesPage() {
     }
   };
 
+  // AI: fill form from prescription scan
+  const handleFillFromScan = (scanned: {
+    name: string;
+    dosage: string;
+    instructions: string;
+    suggestedTime: string;
+    frequency: string;
+    suggestedDays: number[];
+    suggestedCompartment: 1 | 2 | 3;
+  }) => {
+    setEditingMed(null);
+    setName(scanned.name || "");
+    setDosage(scanned.dosage || "");
+    setInstructions(scanned.instructions || "");
+    setTime(scanned.suggestedTime || "08:00");
+    setCompartment(scanned.suggestedCompartment || 1);
+    setSelectedDays(scanned.suggestedDays?.length > 0 ? scanned.suggestedDays : [0, 1, 2, 3, 4, 5, 6]);
+    setStartDate(new Date().toISOString().split("T")[0]);
+    setEndDate("");
+    setErrorMsg(null);
+    setModalOpen(true);
+  };
+
+  // Compute used compartments for scanner suggestion
+  const usedCompartments = meds
+    .filter((m) => m.is_active)
+    .flatMap((m) => m.schedules?.map((s) => s.compartment_number) || []);
+
   return (
     <div className="space-y-6 max-w-4xl">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Medicines</h1>
           <p className="text-sm text-slate-500 mt-0.5">
             Manage your prescriptions, compartments, and dosage schedules
           </p>
         </div>
-        <button
-          onClick={handleOpenAddModal}
-          className="flex items-center gap-2 px-4 py-2.5 bg-sky-500 text-white text-sm font-semibold rounded-xl hover:bg-sky-600 transition-colors shadow-sm cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          Add medicine
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <PrescriptionScanner
+            onFillForm={handleFillFromScan}
+            existingCompartments={usedCompartments}
+          />
+          <button
+            onClick={handleOpenAddModal}
+            className="flex items-center gap-2 px-4 py-2.5 bg-sky-500 text-white text-sm font-semibold rounded-xl hover:bg-sky-600 transition-colors shadow-sm cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            Add medicine
+          </button>
+        </div>
       </div>
 
       {/* Device Feedback Notification */}
@@ -505,6 +541,20 @@ export default function MedicinesPage() {
           })}
         </div>
       </div>
+
+      {/* AI Drug Interaction Shield */}
+      {meds.filter((m) => m.is_active).length >= 2 && (
+        <DrugInteractionShield
+          medicines={meds
+            .filter((m) => m.is_active)
+            .map((m) => ({
+              name: m.name,
+              dosage: m.dosage || undefined,
+              instructions: m.instructions || undefined,
+              compartment: m.schedules?.[0]?.compartment_number,
+            }))}
+        />
+      )}
 
       {loading ? (
         <div className="p-12 flex justify-center items-center">
@@ -678,15 +728,30 @@ export default function MedicinesPage() {
                   </>
                 )}
               </h2>
-              <button
-                onClick={() => {
-                  setModalOpen(false);
-                  setEditingMed(null);
-                }}
-                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                {!editingMed && (
+                  <PrescriptionScanner
+                    onFillForm={(scanned) => {
+                      setName(scanned.name || "");
+                      setDosage(scanned.dosage || "");
+                      setInstructions(scanned.instructions || "");
+                      setTime(scanned.suggestedTime || "08:00");
+                      setCompartment(scanned.suggestedCompartment || 1);
+                      setSelectedDays(scanned.suggestedDays?.length > 0 ? scanned.suggestedDays : [0, 1, 2, 3, 4, 5, 6]);
+                    }}
+                    existingCompartments={usedCompartments}
+                  />
+                )}
+                <button
+                  onClick={() => {
+                    setModalOpen(false);
+                    setEditingMed(null);
+                  }}
+                  className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {errorMsg && (

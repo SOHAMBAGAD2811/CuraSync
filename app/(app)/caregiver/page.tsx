@@ -13,6 +13,7 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
 import type { Database } from "@/lib/types/database";
+import { AdherenceInsights } from "@/components/ai/AdherenceInsights";
 
 type CaregiverLink = Database["public"]["Tables"]["caregiver_links"]["Row"];
 
@@ -121,6 +122,9 @@ export default function CaregiverPage() {
           Invite Caregiver
         </button>
       </div>
+
+      {/* AI Predictive Adherence for Caregivers */}
+      <AdherenceInsights />
 
       {loading ? (
         <div className="p-12 flex justify-center items-center">

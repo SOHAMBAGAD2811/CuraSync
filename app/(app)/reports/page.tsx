@@ -6,6 +6,7 @@ import { CheckCircle2, Clock, XCircle, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
 import type { Database } from "@/lib/types/database";
+import { AdherenceInsights } from "@/components/ai/AdherenceInsights";
 
 type DoseOccurrence = Database["public"]["Tables"]["dose_occurrences"]["Row"];
 type Schedule = Database["public"]["Tables"]["medication_schedules"]["Row"];
@@ -124,6 +125,9 @@ export default function ReportsPage() {
           Weekly medication adherence, punctuality metrics, and missed dose logs
         </p>
       </div>
+
+      {/* AI Predictive Adherence Insights */}
+      <AdherenceInsights />
 
       {loading ? (
         <div className="p-12 flex justify-center items-center">
