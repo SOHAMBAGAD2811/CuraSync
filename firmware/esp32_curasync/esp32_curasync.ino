@@ -1,5 +1,5 @@
 /*
- * CuraSync ESP32 Firmware
+ * CuraSync ESP32 Firmware (v2.0)
  * -------------------------------------------------------------
  * Hardware:
  *   - ESP32 Development Board
@@ -9,11 +9,11 @@
  *   - 3x Indicator LEDs (Compartments 1, 2, 3 -> GPIO 18, 19, 23)
  *   - Passive Buzzer (GPIO 26)
  *
- * Features:
- *   - Independent RTC timekeeping & local buzzer reminders (offline-first)
- *   - Dynamic schedule synchronization with CuraSync cloud
- *   - Automatic dose acknowledgement when compartment reed switch opens
- *   - Periodic connection keepalive ping
+ * Key Improvements:
+ *   - Automatic NTP Internet Time Sync (IST UTC+5:30) with DS3231 RTC calibration
+ *   - Universal HTTP / HTTPS support (Works with local IP and live Vercel domains)
+ *   - Verbose Serial diagnostics for connection troubleshooting
+ *   - Non-blocking cloud synchronization & offline-resilient alarms
  */
 
 #include <Wire.h>
@@ -21,38 +21,48 @@
 #include <LiquidCrystal_I2C.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // =============================================================
-// USER CONFIGURATION (Fill with your credentials)
+// USER CONFIGURATION
 // =============================================================
 const char* WIFI_SSID     = "Pande-2.4G";
 const char* WIFI_PASSWORD = "Ishaan@11";
 
-// Use your computer's local LAN IP (e.g., http://192.168.1.15:3000) or production URL
+// Webserver URL:
+// - For local dev, use your computer LAN IP: "http://192.168.1.106:3000"
+// - For production, use your live Vercel domain: "https://curasync-iot.vercel.app"
 const char* SERVER_URL    = "http://192.168.1.106:3000";
 
-// Copy your Device Key from the CuraSync web app (/device page)
+// Copy your Device Key from your CuraSync dashboard (/device page)
 const char* DEVICE_KEY    = "cs_dev_aralnk0g_mvhwiq49";
+
+// Timezone offset for India Standard Time (IST): UTC+5:30 = 5.5 * 3600 = 19800 seconds
+const long  GMT_OFFSET_SEC      = 19800;
+const int   DAYLIGHT_OFFSET_SEC = 0;
+const char* NTP_SERVER_1        = "pool.ntp.org";
+const char* NTP_SERVER_2        = "time.google.com";
 // =============================================================
 
 RTC_DS3231 rtc;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// Pin assignments
+// Hardware pin assignments
 const int reedPins[3] = {32, 33, 25};
 const int ledPins[3]  = {18, 19, 23};
 const int buzzerPin   = 26;
 
-// Local alarm schedules for Compartments 1, 2, 3 (fallback / initialized values)
-int alarmHour[3]   = {17, 17, 17};
-int alarmMinute[3] = {37, 39, 41};
+// Local alarm schedules for Compartments 1, 2, 3 (hours 0-23, minutes 0-59)
+int alarmHour[3]    = {8, 13, 20};
+int alarmMinute[3]  = {0, 0, 0};
 bool alarmActive[3] = {true, true, true};
 
 const int OPEN_STATE = LOW;
 
-const unsigned long BUZZER_DURATION   = 7000UL;   // 7 seconds
-const unsigned long REMINDER_INTERVAL = 60000UL;  // Re-buzz every 60 seconds if not taken
+const unsigned long BUZZER_DURATION   = 7000UL;   // Beep for 7 seconds
+const unsigned long REMINDER_INTERVAL = 60000UL;  // Re-buzz every 60s if dose not taken
 
 const int BUZZER_FREQUENCY = 2000;
 const int BUZZER_VOLUME    = 128;
@@ -76,8 +86,8 @@ unsigned long lastLcdUpdate         = 0;
 unsigned long lastKeepalivePing     = 0;
 unsigned long lastScheduleSync      = 0;
 
-const unsigned long KEEPALIVE_INTERVAL    = 60000UL;  // Ping server every 60s
-const unsigned long SCHEDULE_SYNC_INTERVAL = 300000UL; // Sync schedule every 5 mins
+const unsigned long KEEPALIVE_INTERVAL     = 60000UL;   // Ping server every 60s
+const unsigned long SCHEDULE_SYNC_INTERVAL = 300000UL;  // Sync schedule every 5 mins
 
 // -------------------------------------------------------------
 // BUZZER FUNCTIONS
@@ -101,6 +111,44 @@ void stopBuzzer() {
 }
 
 // -------------------------------------------------------------
+// NTP TIME & RTC SYNCHRONIZATION
+// -------------------------------------------------------------
+void syncTimeWithNTP() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[CuraSync] Wi-Fi not connected. Skipping NTP sync.");
+    return;
+  }
+
+  Serial.println("[CuraSync] Configuring NTP time sync (IST UTC+5:30)...");
+  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER_1, NTP_SERVER_2);
+
+  struct tm timeinfo;
+  int retry = 0;
+  while (!getLocalTime(&timeinfo) && retry < 6) {
+    delay(500);
+    Serial.print(".");
+    retry++;
+  }
+
+  if (getLocalTime(&timeinfo)) {
+    Serial.println("\n[CuraSync] NTP Time acquired successfully!");
+    // Calibrate DS3231 RTC chip with the network atomic time
+    rtc.adjust(DateTime(timeinfo.tm_year + 1900,
+                        timeinfo.tm_mon + 1,
+                        timeinfo.tm_mday,
+                        timeinfo.tm_hour,
+                        timeinfo.tm_min,
+                        timeinfo.tm_sec));
+
+    Serial.printf("[CuraSync] DS3231 RTC Calibrated: %04d-%02d-%02d %02d:%02d:%02d\n",
+                  timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  } else {
+    Serial.println("\n[CuraSync] Warning: Failed to fetch time from NTP server. Running on existing RTC time.");
+  }
+}
+
+// -------------------------------------------------------------
 // NETWORK FUNCTIONS
 // -------------------------------------------------------------
 void connectWiFi() {
@@ -108,19 +156,22 @@ void connectWiFi() {
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi");
+  Serial.print("[CuraSync] Connecting to Wi-Fi SSID: ");
+  Serial.println(WIFI_SSID);
 
   unsigned long startAttempt = millis();
-  // Attempt for max 8 seconds on boot so we don't block RTC alarms
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
+  // Allow up to 12 seconds for Wi-Fi association
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 12000) {
     delay(500);
     Serial.print(".");
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWi-Fi Connected! IP: " + WiFi.localIP().toString());
+    Serial.println("\n[CuraSync] Wi-Fi Connected!");
+    Serial.print("[CuraSync] IP Address: ");
+    Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\nWi-Fi connection timed out. Running in Offline Mode.");
+    Serial.println("\n[CuraSync] Wi-Fi connection timed out. Operating in Offline Mode.");
   }
 }
 
@@ -129,13 +180,29 @@ void fetchScheduleFromCuraSync() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
+  WiFiClient client;
+  WiFiClientSecure secureClient;
+
   String url = String(SERVER_URL) + "/api/device/schedule?key=" + String(DEVICE_KEY);
-  http.begin(url);
-  http.setTimeout(4000);
+  Serial.print("[CuraSync] Fetching schedules from: ");
+  Serial.println(url);
+
+  if (url.startsWith("https://")) {
+    secureClient.setInsecure();
+    http.begin(secureClient, url);
+  } else {
+    http.begin(client, url);
+  }
+
+  http.addHeader("x-device-key", DEVICE_KEY);
+  http.setTimeout(5000);
 
   int httpCode = http.GET();
   if (httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
+    Serial.println("[CuraSync] Schedule payload received:");
+    Serial.println(payload);
+
     StaticJsonDocument<1536> doc;
     DeserializationError error = deserializeJson(doc, payload);
 
@@ -150,14 +217,21 @@ void fetchScheduleFromCuraSync() {
           if (active) {
             alarmHour[idx]   = a["hour"];
             alarmMinute[idx] = a["minute"];
-            Serial.printf("[CuraSync] C%d updated: %02d:%02d (%s)\n",
+            Serial.printf("[CuraSync] Compartment %d Alarm Updated: %02d:%02d (%s)\n",
                           compNum, alarmHour[idx], alarmMinute[idx], (const char*)a["name"]);
+          } else {
+            Serial.printf("[CuraSync] Compartment %d: No active alarms today.\n", compNum);
           }
         }
       }
+    } else {
+      Serial.println("[CuraSync] Error parsing JSON schedule payload.");
     }
   } else {
-    Serial.printf("[CuraSync] Schedule fetch failed, HTTP: %d\n", httpCode);
+    Serial.printf("[CuraSync] Schedule fetch failed, HTTP Code: %d\n", httpCode);
+    if (httpCode > 0) {
+      Serial.println(http.getString());
+    }
   }
   http.end();
 }
@@ -167,18 +241,34 @@ void sendKeepalivePing() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
+  WiFiClient client;
+  WiFiClientSecure secureClient;
+
   String url = String(SERVER_URL) + "/api/device/heartbeat";
-  http.begin(url);
+  Serial.print("[CuraSync] Sending heartbeat ping to: ");
+  Serial.println(url);
+
+  if (url.startsWith("https://")) {
+    secureClient.setInsecure();
+    http.begin(secureClient, url);
+  } else {
+    http.begin(client, url);
+  }
+
   http.addHeader("Content-Type", "application/json");
-  http.setTimeout(3000);
+  http.addHeader("x-device-key", DEVICE_KEY);
+  http.setTimeout(4000);
 
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) + "\",\"status\":\"OK\"}";
   int httpCode = http.POST(jsonBody);
 
   if (httpCode == HTTP_CODE_OK) {
-    Serial.println("[CuraSync] Connection ping acknowledged.");
+    Serial.println("[CuraSync] Connection ping acknowledged by server.");
   } else {
-    Serial.printf("[CuraSync] Ping failed, HTTP: %d\n", httpCode);
+    Serial.printf("[CuraSync] Ping failed, HTTP Code: %d\n", httpCode);
+    if (httpCode > 0) {
+      Serial.println(http.getString());
+    }
   }
   http.end();
 }
@@ -188,9 +278,20 @@ void reportCompartmentEvent(int compartmentNumber) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
+  WiFiClient client;
+  WiFiClientSecure secureClient;
+
   String url = String(SERVER_URL) + "/api/device/event";
-  http.begin(url);
+
+  if (url.startsWith("https://")) {
+    secureClient.setInsecure();
+    http.begin(secureClient, url);
+  } else {
+    http.begin(client, url);
+  }
+
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-device-key", DEVICE_KEY);
   http.setTimeout(4000);
 
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) +
@@ -202,7 +303,10 @@ void reportCompartmentEvent(int compartmentNumber) {
     String response = http.getString();
     Serial.printf("[CuraSync] Event logged for C%d: %s\n", compartmentNumber, response.c_str());
   } else {
-    Serial.printf("[CuraSync] Event post failed, HTTP: %d\n", httpCode);
+    Serial.printf("[CuraSync] Event post failed, HTTP Code: %d\n", httpCode);
+    if (httpCode > 0) {
+      Serial.println(http.getString());
+    }
   }
   http.end();
 }
@@ -212,51 +316,63 @@ void reportCompartmentEvent(int compartmentNumber) {
 // -------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
+  delay(500);
+  Serial.println("\n--- CuraSync ESP32 Dispenser Unit Booting ---");
+
   Wire.begin(21, 22);
 
+  // Initialize GPIO pins
   for (int i = 0; i < 3; i++) {
-    pinMode(reedPins[i], INPUT);
+    pinMode(reedPins[i], INPUT_PULLUP);
     pinMode(ledPins[i], OUTPUT);
     digitalWrite(ledPins[i], LOW);
 
     previousOpen[i] = (digitalRead(reedPins[i]) == OPEN_STATE);
   }
 
+  // Setup passive buzzer PWM channel
   ledcAttach(buzzerPin, BUZZER_FREQUENCY, 8);
   ledcWrite(buzzerPin, 0);
 
+  // Initialize LCD display
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
-  lcd.print("CuraSync System");
+  lcd.print("CuraSync Dispenser");
   lcd.setCursor(0, 1);
-  lcd.print("Init Hardware...");
+  lcd.print("Hardware Init...");
 
+  // Initialize DS3231 RTC
   if (!rtc.begin()) {
+    Serial.println("[CuraSync] ERROR: DS3231 RTC Module not detected! Check SDA/SCL wiring.");
     lcd.clear();
     lcd.print("RTC Not Found!");
     while (true) {
-      delay(100);
+      delay(200);
     }
   }
 
-  if (rtc.lostPower()) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  }
-
-  // Connect to Wi-Fi and fetch cloud schedules
+  // Connect to Wi-Fi
   lcd.setCursor(0, 1);
   lcd.print("Connecting WiFi ");
   connectWiFi();
 
+  // If connected, calibrate clock via NTP and sync schedule from server
   if (WiFi.status() == WL_CONNECTED) {
+    lcd.setCursor(0, 1);
+    lcd.print("Syncing Time... ");
+    syncTimeWithNTP();
+
     lcd.setCursor(0, 1);
     lcd.print("Syncing Schedule");
     fetchScheduleFromCuraSync();
     sendKeepalivePing();
+  } else {
+    lcd.setCursor(0, 1);
+    lcd.print("Offline Mode    ");
   }
 
-  delay(1000);
+  delay(1200);
   lcd.clear();
 }
 
@@ -275,7 +391,7 @@ void loop() {
     bool justOpened = isOpen && !previousOpen[i];
 
     if (justOpened) {
-      Serial.printf("Compartment %d opened!\n", i + 1);
+      Serial.printf("[CuraSync] Compartment %d OPENED!\n", i + 1);
 
       // Report event to CuraSync cloud backend
       reportCompartmentEvent(i + 1);
@@ -309,16 +425,17 @@ void loop() {
 
         pending[i] = true;
         firstBuzzPending[i] = true;
-        Serial.printf("Alarm triggered for Compartment %d\n", i + 1);
+        Serial.printf("[CuraSync] ALARM TRIGGERED for Compartment %d (%02d:%02d)\n",
+                      i + 1, alarmHour[i], alarmMinute[i]);
       }
     }
 
+    // Compartment LED glows when dose is pending
     digitalWrite(ledPins[i], pending[i] ? HIGH : LOW);
   }
 
   // 2. Manage Buzzer Duration
-  if (buzzerActive &&
-      currentMillis - buzzerStart >= BUZZER_DURATION) {
+  if (buzzerActive && currentMillis - buzzerStart >= BUZZER_DURATION) {
     stopBuzzer();
   }
 
@@ -331,18 +448,18 @@ void loop() {
         continue;
       }
 
-      if (firstBuzzPending[i] ||
-          currentMillis - lastReminder[i] >= REMINDER_INTERVAL) {
+      if (firstBuzzPending[i] || currentMillis - lastReminder[i] >= REMINDER_INTERVAL) {
         startBuzzer(i);
         break;
       }
     }
   }
 
-  // 4. Update LCD Display every 250ms
-  if (currentMillis - lastLcdUpdate >= 250) {
+  // 4. Update LCD Display every 300ms
+  if (currentMillis - lastLcdUpdate >= 300) {
     lastLcdUpdate = currentMillis;
 
+    // Line 1: Time: HH:MM:SS
     char timeLine[17];
     snprintf(timeLine, sizeof(timeLine),
              "Time: %02d:%02d:%02d",
@@ -352,6 +469,7 @@ void loop() {
     lcd.print(timeLine);
     lcd.print("  ");
 
+    // Line 2: Status or Pending Dose Alert
     int firstPending = -1;
     for (int i = 0; i < 3; i++) {
       if (pending[i]) {
@@ -361,9 +479,6 @@ void loop() {
     }
 
     lcd.setCursor(0, 1);
-    lcd.print("                ");
-    lcd.setCursor(0, 1);
-
     if (firstPending == -1) {
       if (WiFi.status() == WL_CONNECTED) {
         lcd.print("Ready [Online]  ");
@@ -371,8 +486,9 @@ void loop() {
         lcd.print("Ready [Offline] ");
       }
     } else {
-      lcd.print("Dose pending: ");
+      lcd.print("DOSE DUE: C");
       lcd.print(firstPending + 1);
+      lcd.print("    ");
     }
   }
 
