@@ -46,28 +46,61 @@ export async function GET(req: NextRequest) {
     }
 
     // 3. Format response specifically for ESP32 firmware
-    // Flattened alarms array for easy parsing in Arduino C++
+    // Current time in IST (India Standard Time UTC+5:30)
+    const nowUtc = new Date();
+    const istTime = new Date(nowUtc.getTime() + 5.5 * 3600 * 1000);
+    const currTotalMinutes = istTime.getUTCHours() * 60 + istTime.getUTCMinutes();
+
+    // Flattened alarms array: picks the NEXT UPCOMING dose today (or loops to tomorrow's earliest)
     const alarms = [1, 2, 3].map((compNum) => {
-      const match = ((schedules as any[]) || []).find(
+      const compScheds = ((schedules as any[]) || []).filter(
         (s: any) => s.compartment_number === compNum
       );
-      if (match) {
-        const parts = match.scheduled_time.split(":");
-        const med = match.medications as unknown as { name: string } | null;
+      if (compScheds.length === 0) {
         return {
           compartment: compNum,
-          hour: parseInt(parts[0], 10),
-          minute: parseInt(parts[1], 10),
-          active: true,
-          name: med?.name || "Medication",
+          hour: -1,
+          minute: -1,
+          active: false,
+          name: "Empty",
         };
       }
+
+      const parsed = compScheds.map((s: any) => {
+        const parts = s.scheduled_time.split(":");
+        const h = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        const med = s.medications as unknown as { name: string } | null;
+        return {
+          hour: h,
+          minute: m,
+          totalMin: h * 60 + m,
+          name: med?.name || "Medication",
+        };
+      }).sort((a, b) => a.totalMin - b.totalMin);
+
+      // Pick next upcoming dose today (or loop to first dose tomorrow)
+      const chosen = parsed.find((p) => p.totalMin >= currTotalMinutes) || parsed[0];
+
       return {
         compartment: compNum,
-        hour: -1,
-        minute: -1,
-        active: false,
-        name: "Empty",
+        hour: chosen.hour,
+        minute: chosen.minute,
+        active: true,
+        name: chosen.name,
+      };
+    });
+
+    // Flat list of ALL active alarms across all compartments
+    const all_alarms = ((schedules as any[]) || []).map((s: any) => {
+      const parts = s.scheduled_time.split(":");
+      const med = s.medications as unknown as { name: string } | null;
+      return {
+        compartment: s.compartment_number,
+        hour: parseInt(parts[0], 10),
+        minute: parseInt(parts[1], 10),
+        active: true,
+        name: med?.name || "Medication",
       };
     });
 
@@ -98,6 +131,7 @@ export async function GET(req: NextRequest) {
       patient_id: device.patient_id,
       sync_time: new Date().toISOString(),
       alarms,
+      all_alarms,
       compartments,
     });
   } catch (err: unknown) {

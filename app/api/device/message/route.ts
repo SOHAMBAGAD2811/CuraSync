@@ -5,7 +5,8 @@ import { getDeviceSupabaseClient } from "@/lib/supabase/device";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    let { device_key, line1, line2, ring_buzzer, duration_sec } = body;
+    let device_key = body.device_key;
+    const { line1, line2, ring_buzzer, duration_sec, compartment_number } = body;
 
     const { client: supabase } = await getDeviceSupabaseClient();
 
@@ -32,6 +33,9 @@ export async function POST(req: NextRequest) {
 
     const trimmedLine1 = (line1 || "").slice(0, 16);
     const trimmedLine2 = (line2 || "").slice(0, 16);
+    const targetCompartment = [1, 2, 3].includes(Number(compartment_number))
+      ? (Number(compartment_number) as 1 | 2 | 3)
+      : undefined;
 
     const messageData = {
       line1: trimmedLine1,
@@ -39,6 +43,7 @@ export async function POST(req: NextRequest) {
       ringBuzzer: Boolean(ring_buzzer),
       durationSec: duration_sec || 15,
       timestamp: new Date().toISOString(),
+      compartmentNumber: targetCompartment,
     };
 
     // 1. In-memory queue
@@ -70,9 +75,9 @@ export async function POST(req: NextRequest) {
       message: "Message queued for ESP32 LCD display",
       data: messageData,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error?.message || "Failed to queue message" },
+      { error: error instanceof Error ? error.message : "Failed to queue message" },
       { status: 500 }
     );
   }

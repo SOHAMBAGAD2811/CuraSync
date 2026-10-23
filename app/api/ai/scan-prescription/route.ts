@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
     const prompt = `You are a medical prescription parser for CuraSync, a smart pill dispenser app. 
 Analyze this image (which may be a doctor's prescription slip, a medicine box, or a medicine label) and extract the medication information.

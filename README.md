@@ -43,6 +43,7 @@ CuraSync is an end-to-end healthcare platform designed to improve medication adh
   - **Compartment 1**: **Red LED** (GPIO 18) • Reed Switch (GPIO 32)
   - **Compartment 2**: **Green LED** (GPIO 19) • Reed Switch (GPIO 33)
   - **Compartment 3**: **White LED** (GPIO 23) • Reed Switch (GPIO 25)
+  - Bays 1–2 use digital reed module outputs; Bay 3 uses the mini reed switch with the ESP32 pull-up. Magnet detected means closed; a due closed bay keeps its LED reminder and snoozing buzzer active until opened.
   - **Passive Buzzer**: GPIO 26
   - **1602 I2C LCD**: SDA GPIO 21, SCL GPIO 22 (Address: `0x27`)
 - **Next Dose Hero Spotlight**: Prominent top-of-dashboard card showing the immediate upcoming or overdue dose, instructions, and which physical compartment & glowing LED to look for on your dispenser.

@@ -73,12 +73,28 @@ export async function POST(req: NextRequest) {
       if (device?.device_key) deviceKey = device.device_key;
 
       // Build context
-      const medList = medications?.map((m: any) => {
+      const medList = medications?.map((m: {
+        name: string;
+        dosage: string | null;
+        instructions: string | null;
+        medication_schedules?: Array<{
+          compartment_number: number;
+          scheduled_time: string;
+          days_of_week: number[];
+        }>;
+      }) => {
         const sched = m.medication_schedules?.[0];
         return `- ${m.name}${m.dosage ? ` (${m.dosage})` : ""} → Bay ${sched?.compartment_number || "?"} at ${sched?.scheduled_time?.slice(0, 5) || "?"} ${sched?.days_of_week?.length === 7 ? "daily" : "selected days"}${m.instructions ? ` | Note: ${m.instructions}` : ""}`;
       }).join("\n") || "No active medications";
 
-      const doseStatus = doses?.map((d: any) => {
+      const doseStatus = doses?.map((d: {
+        due_at: string;
+        status: string;
+        medication_schedules?: {
+          compartment_number: number;
+          medications?: { name: string } | null;
+        } | null;
+      }) => {
         const sched = d.medication_schedules;
         return `- Bay ${sched?.compartment_number || "?"}: ${sched?.medications?.name || "Med"} scheduled at ${d.due_at?.slice(11, 16)} → Status: ${d.status.toUpperCase()}`;
       }).join("\n") || "No doses scheduled for today";
@@ -86,34 +102,52 @@ export async function POST(req: NextRequest) {
       patientContext = `Current Medication Regimen:\n${medList}\n\nToday's Doses:\n${doseStatus}\n\nESP32 Dispenser Status: ${device ? `Active (${device.label || "CuraSync Dispenser"})` : "No device paired"}`;
     }
 
-    // Check if user is asking to trigger a device alert
-    let deviceAction: string | null = null;
-    const triggerAlertMatch = message.match(/(trigger|ring|alert|buzz|sound)\s+(the\s+)?(bay|compartment|box)?\s*([123])/i);
+    // Queue an explicit bay alert directly. Calling this app's own HTTP route
+    // through localhost breaks in deployments and adds a second timeout path.
+    const alertIntent = /\b(trigger|ring|alert|buzz|sound)\b/i.test(message);
+    const targetMatch = message.match(
+      /\b(?:bay|compartment|box)\s*(?:number\s*)?(1|2|3|first|second|third|1st|2nd|3rd)\b|\b(1st|2nd|3rd|first|second|third)\s+(?:bay|compartment|box)\b/i
+    );
+    const targetText = targetMatch?.[1] || targetMatch?.[2];
+    const bayNum = targetText
+      ? ({ first: 1, "1st": 1, second: 2, "2nd": 2, third: 3, "3rd": 3 } as Record<string, number>)[targetText.toLowerCase()] || Number(targetText)
+      : 0;
 
-    if (triggerAlertMatch && deviceKey && userId) {
-      const bayNum = parseInt(triggerAlertMatch[3] || "1");
-      try {
-        const alertRes = await fetch(
-          `${process.env.NEXT_PUBLIC_SUPABASE_URL ? "http://localhost:3000" : ""}/api/device/message`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              device_key: deviceKey,
-              line1: `CURABOT ALERT`,
-              line2: `BAY ${bayNum} - TAKE MED`,
-              ring_buzzer: true,
-              duration_sec: 10,
-            }),
-          }
+    if (alertIntent && bayNum >= 1 && bayNum <= 3 && deviceKey && userId) {
+      const queuedMessage = {
+        line1: "CURABOT ALERT",
+        line2: `BAY ${bayNum} - TAKE MED`,
+        ringBuzzer: true,
+        durationSec: 10,
+        compartment_number: bayNum,
+      };
+      const { error: queueError } = await supabase.from("notifications").insert({
+        patient_id: userId,
+        type: "general",
+        title: queuedMessage.line1,
+        body: JSON.stringify(queuedMessage),
+        is_read: false,
+      });
+
+      if (queueError) {
+        return NextResponse.json(
+          { error: `Could not queue the Bay ${bayNum} alert: ${queueError.message}` },
+          { status: 503 }
         );
-        if (alertRes.ok) {
-          deviceAction = `bay_alert_triggered:${bayNum}`;
-        }
-      } catch {}
+      }
+
+      // Return immediately instead of waiting for Gemini to generate an answer.
+      return NextResponse.json(
+        {
+          success: true,
+          reply: `Alert queued for Bay ${bayNum}. The dispenser will pick it up on its next heartbeat.`,
+          deviceAction: `bay_alert_triggered:${bayNum}`,
+        },
+        { headers: getRateLimitHeaders(rateLimit) }
+      );
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
     const systemPrompt = `You are CuraBot, CuraSync's friendly AI health assistant for an elderly patient's smart pill dispenser system. You have access to the patient's live medication data.
 
@@ -125,8 +159,6 @@ Your capabilities:
 3. Help interpret adherence patterns
 4. Trigger physical device alerts (when explicitly asked to "trigger alert on Bay X" or "ring Bay X")
 5. Give encouragement and reminders
-
-${deviceAction ? `\n✅ ACTION TAKEN: I've successfully triggered an alert on ${deviceAction.replace("bay_alert_triggered:", "Bay ")}!\n` : ""}
 
 Guidelines:
 - Be warm, simple, and patient-friendly (elderly users)
@@ -144,11 +176,11 @@ Guidelines:
       {
         success: true,
         reply,
-        deviceAction,
+        deviceAction: null,
       },
       { headers: getRateLimitHeaders(rateLimit) }
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("CuraBot error:", error);
     return handleGeminiError(error, "CuraBot encountered an error");
   }

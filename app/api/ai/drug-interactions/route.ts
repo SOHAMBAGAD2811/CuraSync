@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
     const medList = medicines
       .map((m: any, i: number) => `Bay ${m.compartment || i + 1}: ${m.name}${m.dosage ? ` (${m.dosage})` : ""}${m.instructions ? ` - ${m.instructions}` : ""}`)

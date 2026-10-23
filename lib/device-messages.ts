@@ -4,6 +4,7 @@ export interface DeviceMessage {
   ringBuzzer: boolean;
   durationSec: number;
   timestamp: string;
+  compartmentNumber?: 1 | 2 | 3;
 }
 
 // In-memory store keyed by device_key, preserved across requests

@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Cpu,
   Wifi,
   WifiOff,
   Activity,
-  Package,
   Key,
   Copy,
   Check,
@@ -17,9 +16,14 @@ import {
   Send,
   Volume2,
   VolumeX,
-  Sparkles,
   Clock,
   Radio,
+  Magnet,
+  DoorOpen,
+  DoorClosed,
+  BellOff,
+  ShieldCheck,
+  Zap,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/components/providers/AuthProvider";
@@ -33,9 +37,18 @@ export default function DevicePage() {
   const [device, setDevice] = useState<Device | null>(null);
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
   const [copied, setCopied] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [simStatus, setSimStatus] = useState<string | null>(null);
+
+  // Magnetic Reed Switch Testing State
+  const [reedStates, setReedStates] = useState<{ [key in CompartmentNumber]: "HIGH" | "LOW" }>({
+    1: "LOW",
+    2: "LOW",
+    3: "LOW",
+  });
+  const [testingReed, setTestingReed] = useState<CompartmentNumber | null>(null);
 
   // LCD Remote Showcase State
   const [lcdLine1, setLcdLine1] = useState("TAKE CITAFIL 5MG");
@@ -48,11 +61,11 @@ export default function DevicePage() {
     text: string;
   } | null>(null);
 
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
 
-  const fetchDeviceData = useCallback(async () => {
+  const fetchDeviceData = useCallback(async (showLoading = true) => {
     if (!user) return;
-    setLoading(true);
+    if (showLoading) setLoading(true);
 
     // 1. Fetch patient's device
     let { data: dev } = await supabase
@@ -88,13 +101,44 @@ export default function DevicePage() {
         .limit(15);
 
       setEvents(eventList || []);
+      const latestHeartbeat = eventList?.find((event) => event.event_type === "heartbeat");
+      const payload = latestHeartbeat?.raw_payload;
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        const reedReadings = (payload as Record<string, unknown>).reed_states;
+        if (Array.isArray(reedReadings)) {
+          setReedStates((current) => {
+            const next = { ...current };
+            for (const reading of reedReadings) {
+              if (!reading || typeof reading !== "object") continue;
+              const item = reading as { bay?: unknown; level?: unknown };
+              if ((item.bay === 1 || item.bay === 2 || item.bay === 3) &&
+                  (item.level === "HIGH" || item.level === "LOW")) {
+                next[item.bay] = item.level;
+              }
+            }
+            return next;
+          });
+        }
+      }
     }
 
-    setLoading(false);
+    if (showLoading) setLoading(false);
+    setCurrentTime(Date.now());
   }, [user, supabase]);
 
   useEffect(() => {
-    fetchDeviceData();
+    const initialFetch = window.setTimeout(() => void fetchDeviceData(), 0);
+    const refreshTimer = window.setInterval(() => {
+      if (!document.hidden) {
+        setCurrentTime(Date.now());
+        void fetchDeviceData(false);
+      }
+    }, 15000);
+
+    return () => {
+      window.clearTimeout(initialFetch);
+      window.clearInterval(refreshTimer);
+    };
   }, [fetchDeviceData]);
 
   const copyDeviceKey = () => {
@@ -106,7 +150,7 @@ export default function DevicePage() {
 
   const isOnline = Boolean(
     device?.last_heartbeat_at &&
-      Date.now() - new Date(device.last_heartbeat_at).getTime() < 5 * 60 * 1000
+      currentTime - new Date(device.last_heartbeat_at).getTime() < 5 * 60 * 1000
   );
 
   // LCD Remote Control Dispatch
@@ -132,7 +176,7 @@ export default function DevicePage() {
       if (data.success) {
         setMsgStatus({
           type: "success",
-          text: `Message queued for physical LCD! ESP32 polls every 5s and will show "${lcdLine1.slice(0, 16)}" with buzzer ${ringBuzzer ? "RINGING" : "off"}.`,
+          text: `Message queued for physical LCD! ESP32 polls every 15s and will show "${lcdLine1.slice(0, 16)}" with buzzer ${ringBuzzer ? "RINGING" : "off"}.`,
         });
       } else {
         setMsgStatus({
@@ -187,6 +231,124 @@ export default function DevicePage() {
       setSimulating(false);
     }
   };
+
+  const REED_PINS: Record<CompartmentNumber, number> = { 1: 32, 2: 33, 3: 25 };
+
+  const REED_BAYS: {
+    num: CompartmentNumber;
+    name: string;
+    reedPin: number;
+    sensorType: string;
+    ledPin: number;
+    ledColor: string;
+    ledColorName: string;
+  }[] = [
+    {
+      num: 1,
+      name: "Compartment 1",
+      reedPin: 32,
+      sensorType: "Digital reed module",
+      ledPin: 18,
+      ledColor: "#ef4444",
+      ledColorName: "Red",
+    },
+    {
+      num: 2,
+      name: "Compartment 2",
+      reedPin: 33,
+      sensorType: "Digital reed module",
+      ledPin: 19,
+      ledColor: "#10b981",
+      ledColorName: "Green",
+    },
+    {
+      num: 3,
+      name: "Compartment 3",
+      reedPin: 25,
+      sensorType: "Mini reed switch",
+      ledPin: 23,
+      ledColor: "#cbd5e1",
+      ledColorName: "White",
+    },
+  ];
+
+  const handleTestReedSwitch = async (
+    compNum: CompartmentNumber,
+    targetState: "LOW" | "HIGH"
+  ) => {
+    if (!device) return;
+    setSimulating(true);
+    setTestingReed(compNum);
+    const eventType = targetState === "HIGH" ? "compartment_open" : "compartment_close";
+    const pin = REED_PINS[compNum];
+
+    setSimStatus(
+      targetState === "HIGH"
+        ? `Testing Reed ${compNum} (GPIO ${pin}) -> HIGH: Lid opened (magnet removed), buzzer silenced & dose confirmed.`
+        : `Testing Reed ${compNum} (GPIO ${pin}) -> LOW: Lid closed (magnet detected).`
+    );
+
+    try {
+      const res = await fetch("/api/device/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_key: device.device_key,
+          event_type: eventType,
+          compartment_number: compNum,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setReedStates((prev) => ({ ...prev, [compNum]: targetState }));
+        if (targetState === "HIGH") {
+          // Also queue a silence-command so the physical ESP32 buzzer stops
+          // on the next heartbeat poll (within 5 s), even if the physical
+          // reed hasn't been physically moved.
+          try {
+            await fetch("/api/device/message", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                device_key: device.device_key,
+                line1: "DOSE TAKEN! OK",
+                line2: `Bay ${compNum}: confirmed`,
+                ring_buzzer: false,
+                duration_sec: 1,
+              }),
+            });
+          } catch {
+            // Non-critical — event was still logged
+          }
+          setSimStatus(
+            data.dose_acknowledged
+              ? `Reed ${compNum} (GPIO ${pin}) triggered HIGH! Buzzer silenced, LED blinking stopped, dose acknowledged!`
+              : `Reed ${compNum} (GPIO ${pin}) triggered HIGH! Buzzer silenced, LED blinking stopped, event recorded.`
+          );
+        } else {
+          setSimStatus(
+            `Reed ${compNum} (GPIO ${pin}) returned to LOW (Magnet Contact / Lid Closed).`
+          );
+        }
+      } else {
+        setSimStatus(`Error: ${data.error}`);
+      }
+      fetchDeviceData();
+    } catch {
+      setSimStatus("Failed to send reed switch simulation request.");
+    } finally {
+      setSimulating(false);
+      setTestingReed(null);
+    }
+  };
+
+  const handleSimulateFullDoseCycle = async (compNum: CompartmentNumber) => {
+    await handleTestReedSwitch(compNum, "HIGH");
+    setTimeout(async () => {
+      await handleTestReedSwitch(compNum, "LOW");
+    }, 2200);
+  };
+
 
   const handleSimulateCompartmentOpen = async (compNum: CompartmentNumber) => {
     if (!device) return;
@@ -542,6 +704,153 @@ export default function DevicePage() {
                 <span>{msgStatus.text}</span>
               </div>
             )}
+          </div>
+
+          {/* Magnetic Reed Switch Hardware Diagnostics Bench */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-100 flex items-center justify-center flex-shrink-0">
+                  <Magnet className="w-5 h-5 text-violet-600" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-slate-900">
+                      Magnetic Reed Switch Sensor Diagnostics
+                    </h2>
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-violet-100 text-violet-800">
+                      Live GPIO + Simulator
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Live ESP32 reed readings refresh every 15 seconds. The buttons below send simulated events only.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 self-start sm:self-auto">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Bays 1–2: digital modules · Bay 3: mini reed</span>
+              </div>
+            </div>
+
+            {/* Reed Switches Grid (3 Bays) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {REED_BAYS.map((bay) => {
+                const isLow = reedStates[bay.num] === "LOW";
+                const isBeingTested = testingReed === bay.num && simulating;
+
+                return (
+                  <div
+                    key={bay.num}
+                    className={`rounded-xl border p-4 transition-all duration-200 space-y-3.5 ${
+                      !isLow
+                        ? "bg-amber-50/60 border-amber-300 ring-2 ring-amber-400/20 shadow-xs"
+                        : "bg-slate-50/70 border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    {/* Bay Header */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-3 h-3 rounded-full border border-black/15 shadow-2xs"
+                          style={{ backgroundColor: bay.ledColor }}
+                        />
+                        <span className="font-bold text-xs text-slate-800">
+                          {bay.name}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-md uppercase border ${
+                          !isLow
+                            ? "bg-amber-100 text-amber-800 border-amber-300 animate-pulse"
+                            : "bg-emerald-100 text-emerald-800 border-emerald-300"
+                        }`}
+                      >
+                        {isLow ? "LID CLOSED (LOW)" : "LID OPEN (HIGH)"}
+                      </span>
+                    </div>
+
+                    {/* Technical Pinout Specs */}
+                    <div className="bg-white rounded-lg p-2.5 border border-slate-200/80 text-[11px] space-y-1 font-mono text-slate-600">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400">Reed Pin:</span>
+                        <span className="font-semibold text-slate-800">GPIO {bay.reedPin}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400">Sensor:</span>
+                        <span className="font-semibold text-slate-800">{bay.sensorType}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400">Paired Alert LED:</span>
+                        <span className="font-semibold text-slate-800">
+                          GPIO {bay.ledPin} ({bay.ledColorName})
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center pt-1 border-t border-slate-100">
+                        <span className="text-slate-400">Magnet State:</span>
+                        <span className={`font-semibold ${isLow ? "text-slate-700" : "text-amber-600"}`}>
+                          {isLow ? "Detected (Lid Closed)" : "Removed (Lid Open)"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleTestReedSwitch(bay.num, "HIGH")}
+                          disabled={simulating}
+                          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold rounded-lg transition-all shadow-2xs disabled:opacity-50 cursor-pointer"
+                          title="Simulates lifting lid (Reed sends HIGH, silences buzzer)"
+                        >
+                          <DoorOpen className="w-3.5 h-3.5" />
+                          <span>Open (HIGH)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleTestReedSwitch(bay.num, "LOW")}
+                          disabled={simulating}
+                          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-700 hover:bg-slate-800 text-white text-[11px] font-semibold rounded-lg transition-all shadow-2xs disabled:opacity-50 cursor-pointer"
+                          title="Simulates closing lid (Reed sends LOW, magnet detected)"
+                        >
+                          <DoorClosed className="w-3.5 h-3.5" />
+                          <span>Close (LOW)</span>
+                        </button>
+                      </div>
+
+                      {/* Quick Ingestion Cycle Test */}
+                      <button
+                        type="button"
+                        onClick={() => handleSimulateFullDoseCycle(bay.num)}
+                        disabled={simulating}
+                        className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 text-[11px] font-semibold rounded-lg transition-all disabled:opacity-50 cursor-pointer"
+                      >
+                        {isBeingTested ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Zap className="w-3.5 h-3.5 text-violet-600" />
+                        )}
+                        <span>Quick Intake Test (Open → Close)</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Auto-Silence & Safety Verification Note */}
+            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 flex items-start gap-3 text-xs text-slate-600">
+              <BellOff className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-semibold text-slate-800">
+                  Closed Magnet Holds Dose Alarm Until Bay Opens
+                </p>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  At a scheduled time, a closed bay keeps its LED reminder and buzzer snooze active. Removing the magnet opens the bay, clears that bay&apos;s reminder, silences its buzzer, and sends a dose event. Bays 1–2 use digital module outputs; Bay 3 uses the mini reed input. Open/closed polarity is set in the ESP32 firmware.
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* Hardware Simulator Toolbar */}

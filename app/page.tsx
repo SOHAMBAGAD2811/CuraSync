@@ -285,9 +285,10 @@ if (rtc.now().hour() == alarmHour[0]) {
   startBuzzer(0);
 }
 
-// 3. Reed Switch Auto-Acknowledgement
-if (digitalRead(reedPin_C1) == LOW) {
+// 3. Reed Switch Auto-Acknowledgement (Lid Lifted -> GPIO HIGH)
+if (digitalRead(reedPin_C1) == HIGH) {
   reportCompartmentOpen(1); // Auto marks dose taken
+  stopBuzzer();
   digitalWrite(ledPin_Red, LOW);
 }`}
               </pre>

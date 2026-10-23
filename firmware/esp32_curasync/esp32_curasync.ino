@@ -1,20 +1,19 @@
 /*
- * CuraSync ESP32 Firmware (v2.3)
+ * CuraSync ESP32 Firmware (v2.4)
  * -------------------------------------------------------------
  * Hardware:
  *   - ESP32 Development Board
  *   - DS3231 RTC Module (I2C: SDA=21, SCL=22)
  *   - 1602 LCD I2C Display (Address: 0x27)
- *   - 3x Reed Switches (Compartments 1, 2, 3 -> GPIO 32, 33, 25)
+ *   - Digital reed modules (Bays 1/2 -> GPIO 32/33); mini reed (Bay 3 -> GPIO 25)
  *   - 3x Indicator LEDs (Compartments 1, 2, 3 -> GPIO 18, 19, 23)
  *   - Buzzer (GPIO 26) - Supports both Active and Passive Buzzers!
  *
- * New in v2.3:
- *   - Dual-Server Auto-Fallback: Seamless connection to Vercel HTTPS & local HTTP
- *   - Fixed ESP32 HTTPClient WiFiClient requirement (no more dropped connections)
- *   - Live LCD Status Diagnostics: Displays exact HTTP code on screen if failing
- *   - Rapid 5-second polling with real-time text & buzzer trigger from web dashboard
- *   - Universal Buzzer driver with boot test chirp
+ * v2.4:
+ *   - Sensor-specific inputs and closed-magnet alarm behavior
+ *   - Local snooze/reminder loop continues while Wi-Fi retries asynchronously
+ *   - Live reed levels reported to the device page
+ *   - Reduced LCD clears and no boot buzzer chirp
  */
 
 #include <Wire.h>
@@ -29,7 +28,7 @@
 // =============================================================
 // USER CONFIGURATION
 // =============================================================
-const char* WIFI_SSID     = "Pande-2.4G";
+const char* WIFI_SSID     = "Pande-2.4G EXT";
 const char* WIFI_PASSWORD = "Ishaan@11";
 
 // Vercel Production Server (Recommended - works anywhere with zero router config):
@@ -77,7 +76,13 @@ int alarmMinute[3]  = {0, 0, 0};
 bool alarmActive[3] = {true, true, true};
 char alarmMedName[3][17] = {"Citafil", "Medication 2", "Medication 3"};
 
-const int OPEN_STATE = LOW;
+// Bays 1/2 use digital reed modules; Bay 3 is the bare mini reed switch.
+// With the module DO pins wired at 3.3V and the mini switch wired to GND,
+// magnet detected means LOW (closed) and magnet removed means HIGH (open).
+// Change an entry if a module's DO output is inverted.
+const uint8_t reedPinModes[3] = {INPUT, INPUT, INPUT_PULLUP};
+const int REED_CLOSED_STATE[3] = {LOW, LOW, LOW};
+const unsigned long REED_DEBOUNCE_MS = 40UL;
 
 const unsigned long BUZZER_DURATION   = 7000UL;   // Beep for 7 seconds
 const unsigned long REMINDER_INTERVAL = 60000UL;  // Re-buzz every 60s if not taken
@@ -85,6 +90,12 @@ const unsigned long REMINDER_INTERVAL = 60000UL;  // Re-buzz every 60s if not ta
 bool pending[3]          = {false, false, false};
 bool firstBuzzPending[3] = {false, false, false};
 bool previousOpen[3]     = {false, false, false};
+int reedRawState[3]      = {HIGH, HIGH, HIGH};
+int reedStableState[3]   = {HIGH, HIGH, HIGH};
+unsigned long reedRawChangedAt[3] = {0, 0, 0};
+bool compartmentClosed[3] = {true, true, true};
+bool unsentOpenEvent[3] = {false, false, false};
+unsigned long lastOpenEventAttempt[3] = {0, 0, 0};
 bool ledBlinking[3]      = {false, false, false};
 
 bool buzzerActive = false;
@@ -92,9 +103,26 @@ unsigned long buzzerStart = 0;
 unsigned long buzzerDurationTarget = BUZZER_DURATION;
 unsigned long lastReminder[3] = {0, 0, 0};
 
-int lastAlarmDay[3]   = {-1, -1, -1};
-int lastAlarmMonth[3] = {-1, -1, -1};
-int lastAlarmYear[3]  = {-1, -1, -1};
+// Multi-schedule storage supporting all daily doses across all 3 compartments
+struct ScheduleEntry {
+  int compartment; // 1, 2, 3
+  int hour;
+  int minute;
+  char name[17];
+  bool active;
+};
+
+const int MAX_SCHEDULES = 16;
+ScheduleEntry activeSchedules[MAX_SCHEDULES];
+int totalActiveSchedules = 0;
+
+// Minute-level debounce tracking: prevents false re-triggers in the same minute
+// while ensuring subsequent doses on the same day trigger properly
+int lastAlarmDay[3]    = {-1, -1, -1};
+int lastAlarmMonth[3]  = {-1, -1, -1};
+int lastAlarmYear[3]   = {-1, -1, -1};
+int lastAlarmHour[3]   = {-1, -1, -1};
+int lastAlarmMinute[3] = {-1, -1, -1};
 
 int buzzerCompartment = -1;
 int nextCompartment   = 0;
@@ -102,13 +130,27 @@ int nextCompartment   = 0;
 unsigned long lastLcdUpdate         = 0;
 unsigned long lastKeepalivePing     = 0;
 unsigned long lastScheduleSync      = 0;
+unsigned long lastNtpSync           = 0;  // Tracks last successful NTP→RTC re-sync
 
 // Rapid polling: Ping server every 5s, re-sync medication schedules every 30s
-const unsigned long KEEPALIVE_INTERVAL     = 5000UL;
+// Re-sync NTP every 6 hours to keep the DS3231 RTC accurate long-term
+const unsigned long KEEPALIVE_INTERVAL     = 15000UL;
 const unsigned long SCHEDULE_SYNC_INTERVAL = 30000UL;
+const unsigned long NTP_SYNC_INTERVAL      = 6UL * 60UL * 60UL * 1000UL; // 6 hours
+const unsigned long WIFI_RETRY_INTERVAL    = 15000UL;
+const unsigned long EVENT_RETRY_INTERVAL   = 15000UL;
+// Cloud function cold starts and sequential database work can exceed 3 seconds
+// even when the ESP32 has a good Wi-Fi signal.
+const uint16_t HTTP_RESPONSE_TIMEOUT_MS = 8000;
 
 bool serverConnected = false;
 int lastHttpCode = 0;
+bool wifiStarted = false;
+bool wifiWasConnected = false;
+unsigned long lastWifiAttempt = 0;
+bool ntpSyncPending = false;
+bool ntpConfigured = false;
+unsigned long lastNtpCheck = 0;
 
 // Custom LCD message display state (dispatched from frontend)
 bool customMessageActive = false;
@@ -140,7 +182,9 @@ void soundBuzzerOff() {
 void updateBuzzerSound() {
   if (!buzzerActive) return;
 
-  unsigned long cycle = millis() % 450;
+  // Start each reminder with an ON pulse immediately. Using absolute millis()
+  // could put the first pulse in its silent phase and make a new alarm seem dead.
+  unsigned long cycle = (millis() - buzzerStart) % 450;
   if (cycle < 300) {
     soundBuzzerOn();
   } else {
@@ -152,16 +196,18 @@ void startBuzzer(int compartment) {
   buzzerActive = true;
   buzzerStart = millis();
   buzzerDurationTarget = BUZZER_DURATION;
-  updateBuzzerSound();
   if (compartment >= 0 && compartment < 3) {
     lastReminder[compartment] = millis();
     buzzerCompartment = compartment;
     firstBuzzPending[compartment] = false;
     nextCompartment = (compartment + 1) % 3;
+    Serial.printf("[CuraSync] Buzzer ON for Bay %d\n", compartment + 1);
   }
+  updateBuzzerSound();
 }
 
 void stopBuzzer() {
+  if (buzzerActive) Serial.println("[CuraSync] Buzzer OFF");
   soundBuzzerOff();
   buzzerActive = false;
   buzzerCompartment = -1;
@@ -176,12 +222,15 @@ void syncTimeWithNTP() {
     return;
   }
 
-  Serial.println("[CuraSync] Fetching atomic time from NTP (IST UTC+5:30)...");
-  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER_1, NTP_SERVER_2);
+  if (!ntpConfigured) {
+    Serial.println("[CuraSync] Starting NTP sync (IST UTC+5:30)...");
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER_1, NTP_SERVER_2);
+    ntpConfigured = true;
+  }
 
   struct tm timeinfo;
-  // 1200ms short timeout prevents watchdog resets on routers blocking NTP UDP port
-  if (getLocalTime(&timeinfo, 1200)) {
+  // Poll without blocking reed monitoring and the local reminder/snooze loop.
+  if (getLocalTime(&timeinfo, 20)) {
     Serial.println("[CuraSync] Exact NTP time acquired!");
     rtc.adjust(DateTime(timeinfo.tm_year + 1900,
                         timeinfo.tm_mon + 1,
@@ -193,38 +242,43 @@ void syncTimeWithNTP() {
     Serial.printf("[CuraSync] DS3231 RTC Synchronized: %04d-%02d-%02d %02d:%02d:%02d\n",
                   timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                   timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    lastNtpSync = millis();
+    ntpSyncPending = false;
   } else {
-    Serial.println("[CuraSync] NTP skipped. Running smoothly on DS3231 hardware RTC.");
+    ntpSyncPending = true;
+    Serial.println("[CuraSync] NTP not ready; keeping DS3231 time and retrying later.");
   }
 }
 
 // -------------------------------------------------------------
-// NETWORK FUNCTIONS WITH AUTO-FALLBACK
+// NETWORK FUNCTIONS WITH OPTIONAL LOCAL-DEV FALLBACK
 // -------------------------------------------------------------
 void connectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) return;
-
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
-
-  Serial.print("[CuraSync] Connecting to Wi-Fi SSID: ");
-  Serial.println(WIFI_SSID);
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
-    delay(500);
-    Serial.print(".");
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiWasConnected) {
+      wifiWasConnected = true;
+      Serial.print("[CuraSync] Wi-Fi connected. Local IP: ");
+      Serial.println(WiFi.localIP());
+      ntpConfigured = false;
+      syncTimeWithNTP();
+      lastKeepalivePing = millis();
+      lastScheduleSync = millis();
+    }
+    return;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[CuraSync] Wi-Fi Connected!");
-    Serial.print("[CuraSync] Local IP: ");
-    Serial.println(WiFi.localIP());
+  wifiWasConnected = false;
+  if (wifiStarted && millis() - lastWifiAttempt < WIFI_RETRY_INTERVAL) return;
+
+  lastWifiAttempt = millis();
+  Serial.printf("[CuraSync] Starting Wi-Fi connection to %s\n", WIFI_SSID);
+  if (!wifiStarted) {
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    wifiStarted = true;
   } else {
-    Serial.println("\n[CuraSync] Wi-Fi connection failed. Operating in Offline Mode.");
+    WiFi.reconnect();
   }
 }
 
@@ -235,10 +289,10 @@ int doSinglePost(const String& fullUrl, const String& jsonBody, String& outRespo
   bool beginOk = false;
   if (fullUrl.startsWith("https://")) {
     secureClient.setInsecure();
-    secureClient.setTimeout(3000);
+    secureClient.setTimeout(HTTP_RESPONSE_TIMEOUT_MS);
     beginOk = http.begin(secureClient, fullUrl);
   } else {
-    plainClient.setTimeout(3000);
+    plainClient.setTimeout(HTTP_RESPONSE_TIMEOUT_MS);
     beginOk = http.begin(plainClient, fullUrl);
   }
 
@@ -249,7 +303,7 @@ int doSinglePost(const String& fullUrl, const String& jsonBody, String& outRespo
 
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(3000);
+  http.setTimeout(HTTP_RESPONSE_TIMEOUT_MS);
 
   int code = http.POST(jsonBody);
   if (code > 0) {
@@ -266,17 +320,17 @@ int doSingleGet(const String& fullUrl, String& outResponse) {
   bool beginOk = false;
   if (fullUrl.startsWith("https://")) {
     secureClient.setInsecure();
-    secureClient.setTimeout(3000);
+    secureClient.setTimeout(HTTP_RESPONSE_TIMEOUT_MS);
     beginOk = http.begin(secureClient, fullUrl);
   } else {
-    plainClient.setTimeout(3000);
+    plainClient.setTimeout(HTTP_RESPONSE_TIMEOUT_MS);
     beginOk = http.begin(plainClient, fullUrl);
   }
 
   if (!beginOk) return -10;
 
   http.addHeader("x-device-key", DEVICE_KEY);
-  http.setTimeout(3000);
+  http.setTimeout(HTTP_RESPONSE_TIMEOUT_MS);
 
   int code = http.GET();
   if (code > 0) {
@@ -286,29 +340,30 @@ int doSingleGet(const String& fullUrl, String& outResponse) {
   return code;
 }
 
-// Dispatch POST with automatic local <-> cloud fallback
+// Dispatch POST with optional local-development fallback
 int dispatchPost(const String& path, const String& jsonBody, String& outResponse) {
   const char* primary = PREFER_LOCAL_DEV ? LOCAL_SERVER_URL : CLOUD_SERVER_URL;
   const char* backup  = PREFER_LOCAL_DEV ? CLOUD_SERVER_URL : LOCAL_SERVER_URL;
 
   int code = doSinglePost(String(primary) + path, jsonBody, outResponse);
 
-  // If primary unreachable (e.g. laptop asleep or AP isolation), use backup
-  if (code <= 0) {
+  // In local development mode, fall back to cloud. In production, avoid
+  // wasting another timeout on a laptop's private LAN address.
+  if (code <= 0 && PREFER_LOCAL_DEV) {
     Serial.printf("[CuraSync] Primary server failed (code %d). Trying fallback...\n", code);
     code = doSinglePost(String(backup) + path, jsonBody, outResponse);
   }
   return code;
 }
 
-// Dispatch GET with automatic local <-> cloud fallback
+// Dispatch GET with optional local-development fallback
 int dispatchGet(const String& pathAndQuery, String& outResponse) {
   const char* primary = PREFER_LOCAL_DEV ? LOCAL_SERVER_URL : CLOUD_SERVER_URL;
   const char* backup  = PREFER_LOCAL_DEV ? CLOUD_SERVER_URL : LOCAL_SERVER_URL;
 
   int code = doSingleGet(String(primary) + pathAndQuery, outResponse);
 
-  if (code <= 0) {
+  if (code <= 0 && PREFER_LOCAL_DEV) {
     Serial.printf("[CuraSync] Primary GET failed (code %d). Trying fallback...\n", code);
     code = doSingleGet(String(backup) + pathAndQuery, outResponse);
   }
@@ -329,35 +384,104 @@ void fetchScheduleFromCuraSync() {
     Serial.println("[CuraSync] Schedule synced from server:");
     Serial.println(payload);
 
-    StaticJsonDocument<1536> doc;
+    DynamicJsonDocument doc(3072);
     DeserializationError error = deserializeJson(doc, payload);
 
     if (!error && doc["success"] == true) {
-      JsonArray alarms = doc["alarms"];
-      for (JsonObject a : alarms) {
-        int compNum = a["compartment"]; // 1, 2, 3
-        int idx = compNum - 1;
-        if (idx >= 0 && idx < 3) {
-          bool active = a["active"] | false;
-          alarmActive[idx] = active;
-          if (active) {
-            alarmHour[idx]   = a["hour"];
-            alarmMinute[idx] = a["minute"];
-            const char* mName = a["name"] | "Medication";
-            strncpy(alarmMedName[idx], mName, 16);
-            alarmMedName[idx][16] = '\0';
-            Serial.printf("[CuraSync] C%d Alarm Set: %02d:%02d (%s)\n",
-                          compNum, alarmHour[idx], alarmMinute[idx], alarmMedName[idx]);
-          } else {
-            strncpy(alarmMedName[idx], "Empty Bay", 16);
-            alarmMedName[idx][16] = '\0';
-            Serial.printf("[CuraSync] C%d: No active doses scheduled.\n", compNum);
+      totalActiveSchedules = 0;
+
+      // 1. Primary: Parse flat all_alarms array if provided
+      if (doc.containsKey("all_alarms")) {
+        JsonArray allA = doc["all_alarms"];
+        for (JsonObject a : allA) {
+          if (totalActiveSchedules < MAX_SCHEDULES) {
+            int comp = a["compartment"];
+            if (comp >= 1 && comp <= 3) {
+              activeSchedules[totalActiveSchedules].compartment = comp;
+              activeSchedules[totalActiveSchedules].hour        = a["hour"];
+              activeSchedules[totalActiveSchedules].minute      = a["minute"];
+              activeSchedules[totalActiveSchedules].active      = a["active"] | true;
+              const char* mName = a["name"] | "Medication";
+              strncpy(activeSchedules[totalActiveSchedules].name, mName, 16);
+              activeSchedules[totalActiveSchedules].name[16] = '\0';
+              totalActiveSchedules++;
+            }
           }
         }
       }
+
+      // 2. Fallback: Parse detailed compartments array if all_alarms was not present
+      if (totalActiveSchedules == 0 && doc.containsKey("compartments")) {
+        JsonArray comps = doc["compartments"];
+        for (JsonObject c : comps) {
+          int compNum = c["compartment"];
+          JsonArray sList = c["schedules"];
+          for (JsonObject s : sList) {
+            if (totalActiveSchedules < MAX_SCHEDULES) {
+              const char* tStr = s["scheduled_time"] | "";
+              if (strlen(tStr) >= 5) {
+                activeSchedules[totalActiveSchedules].compartment = compNum;
+                activeSchedules[totalActiveSchedules].hour = atoi(tStr);
+                activeSchedules[totalActiveSchedules].minute = atoi(tStr + 3);
+                activeSchedules[totalActiveSchedules].active = true;
+                const char* mName = s["medicine_name"] | "Medication";
+                strncpy(activeSchedules[totalActiveSchedules].name, mName, 16);
+                activeSchedules[totalActiveSchedules].name[16] = '\0';
+                totalActiveSchedules++;
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Fallback: Parse alarms array (next upcoming alarm per compartment)
+      if (doc.containsKey("alarms")) {
+        JsonArray alarms = doc["alarms"];
+        for (JsonObject a : alarms) {
+          int compNum = a["compartment"]; // 1, 2, 3
+          int idx = compNum - 1;
+          if (idx >= 0 && idx < 3) {
+            bool active = a["active"] | false;
+            alarmActive[idx] = active;
+            if (active) {
+              alarmHour[idx]   = a["hour"];
+              alarmMinute[idx] = a["minute"];
+              const char* mName = a["name"] | "Medication";
+              strncpy(alarmMedName[idx], mName, 16);
+              alarmMedName[idx][16] = '\0';
+              if (totalActiveSchedules == 0 && totalActiveSchedules < MAX_SCHEDULES) {
+                activeSchedules[totalActiveSchedules].compartment = compNum;
+                activeSchedules[totalActiveSchedules].hour = alarmHour[idx];
+                activeSchedules[totalActiveSchedules].minute = alarmMinute[idx];
+                activeSchedules[totalActiveSchedules].active = true;
+                strncpy(activeSchedules[totalActiveSchedules].name, alarmMedName[idx], 16);
+                activeSchedules[totalActiveSchedules].name[16] = '\0';
+                totalActiveSchedules++;
+              }
+            } else {
+              strncpy(alarmMedName[idx], "Empty Bay", 16);
+              alarmMedName[idx][16] = '\0';
+            }
+          }
+        }
+      }
+
+      Serial.printf("[CuraSync] Synchronized %d total medication schedules:\n", totalActiveSchedules);
+      for (int s = 0; s < totalActiveSchedules; s++) {
+        Serial.printf("  Bay %d: %02d:%02d (%s)\n",
+                      activeSchedules[s].compartment,
+                      activeSchedules[s].hour,
+                      activeSchedules[s].minute,
+                      activeSchedules[s].name);
+      }
     }
   } else {
-    lastHttpCode = httpCode;
+    // Only paint lastHttpCode with the failure if the server isn't already
+    // confirmed online via the heartbeat. This prevents a background schedule-sync
+    // failure (e.g. Vercel cold-start) from overwriting a healthy lastHttpCode.
+    if (!serverConnected) {
+      lastHttpCode = httpCode;
+    }
     Serial.printf("[CuraSync] Schedule fetch failed, HTTP Code: %d\n", httpCode);
   }
 }
@@ -367,7 +491,24 @@ void sendKeepalivePing() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   String response = "";
-  String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) + "\",\"status\":\"OK\"}";
+  String jsonBody;
+  jsonBody.reserve(220);
+  jsonBody = "{\"device_key\":\"";
+  jsonBody += DEVICE_KEY;
+  jsonBody += "\",\"status\":\"OK\",\"reed_states\":[";
+  for (int i = 0; i < 3; i++) {
+    if (i > 0) jsonBody += ",";
+    jsonBody += "{\"bay\":";
+    jsonBody += String(i + 1);
+    jsonBody += ",\"gpio\":";
+    jsonBody += String(reedPins[i]);
+    jsonBody += ",\"level\":\"";
+    jsonBody += reedStableState[i] == HIGH ? "HIGH" : "LOW";
+    jsonBody += "\",\"closed\":";
+    jsonBody += compartmentClosed[i] ? "true" : "false";
+    jsonBody += "}";
+  }
+  jsonBody += "]}";
 
   int httpCode = dispatchPost("/api/device/heartbeat", jsonBody, response);
   lastHttpCode = httpCode;
@@ -383,6 +524,7 @@ void sendKeepalivePing() {
       const char* l2 = doc["custom_msg"]["line2"] | "";
       bool ringBuzzer = doc["custom_msg"]["ring_buzzer"] | false;
       int durSec = doc["custom_msg"]["duration_sec"] | 15;
+      int targetCompartment = doc["custom_msg"]["compartment_number"] | 0;
 
       Serial.println("\n==========================================");
       Serial.println("  >>> INCOMING MESSAGE FROM WEB APP <<<   ");
@@ -406,7 +548,6 @@ void sendKeepalivePing() {
       snprintf(pad1, sizeof(pad1), "%-16s", customLine1);
       snprintf(pad2, sizeof(pad2), "%-16s", customLine2);
 
-      lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print(pad1);
       lcd.setCursor(0, 1);
@@ -416,9 +557,19 @@ void sendKeepalivePing() {
       String combined = String(l1) + " " + String(l2);
       combined.toUpperCase();
 
-      bool b1 = (combined.indexOf("BAY 1") >= 0) || (combined.indexOf("C1") >= 0) || (combined.indexOf("COMPARTMENT 1") >= 0);
-      bool b2 = (combined.indexOf("BAY 2") >= 0) || (combined.indexOf("C2") >= 0) || (combined.indexOf("COMPARTMENT 2") >= 0);
-      bool b3 = (combined.indexOf("BAY 3") >= 0) || (combined.indexOf("C3") >= 0) || (combined.indexOf("COMPARTMENT 3") >= 0);
+      bool b1 = false;
+      bool b2 = false;
+      bool b3 = false;
+      if (targetCompartment >= 1 && targetCompartment <= 3) {
+        b1 = targetCompartment == 1;
+        b2 = targetCompartment == 2;
+        b3 = targetCompartment == 3;
+      } else {
+        // Compatibility path for older callers that only send LCD text.
+        b1 = (combined.indexOf("BAY 1") >= 0) || (combined.indexOf("C1") >= 0) || (combined.indexOf("COMPARTMENT 1") >= 0);
+        b2 = (combined.indexOf("BAY 2") >= 0) || (combined.indexOf("C2") >= 0) || (combined.indexOf("COMPARTMENT 2") >= 0);
+        b3 = (combined.indexOf("BAY 3") >= 0) || (combined.indexOf("C3") >= 0) || (combined.indexOf("COMPARTMENT 3") >= 0);
+      }
 
       if (b1 || b2 || b3) {
         ledBlinking[0] = b1;
@@ -435,10 +586,14 @@ void sendKeepalivePing() {
 
       // Trigger buzzer if requested
       if (ringBuzzer) {
+        Serial.printf("[CuraSync] Remote alert target: Bay %d, buzzer=%s\n",
+                      b1 ? 1 : (b2 ? 2 : (b3 ? 3 : 0)), ringBuzzer ? "ON" : "OFF");
         buzzerActive = true;
         buzzerStart = millis();
         buzzerDurationTarget = customMessageDuration;
         updateBuzzerSound();
+      } else {
+        stopBuzzer();
       }
     }
   } else {
@@ -448,8 +603,8 @@ void sendKeepalivePing() {
 }
 
 // 3. Send Compartment Opened Event to CuraSync
-void reportCompartmentEvent(int compartmentNumber) {
-  if (WiFi.status() != WL_CONNECTED) return;
+bool reportCompartmentEvent(int compartmentNumber) {
+  if (WiFi.status() != WL_CONNECTED) return false;
 
   String response = "";
   String jsonBody = "{\"device_key\":\"" + String(DEVICE_KEY) +
@@ -461,9 +616,11 @@ void reportCompartmentEvent(int compartmentNumber) {
     serverConnected = true;
     lastHttpCode = httpCode;
     Serial.printf("[CuraSync] Event logged for Compartment %d\n", compartmentNumber);
+    return true;
   } else {
     lastHttpCode = httpCode;
     Serial.printf("[CuraSync] Event post failed, HTTP Code: %d\n", httpCode);
+    return false;
   }
 }
 
@@ -481,66 +638,58 @@ void setup() {
 
   // Initialize GPIO pins
   for (int i = 0; i < 3; i++) {
-    pinMode(reedPins[i], INPUT_PULLUP);
+    pinMode(reedPins[i], reedPinModes[i]);
     pinMode(ledPins[i], OUTPUT);
     digitalWrite(ledPins[i], LOW);
 
-    previousOpen[i] = (digitalRead(reedPins[i]) == OPEN_STATE);
+    reedRawState[i] = digitalRead(reedPins[i]);
+    reedStableState[i] = reedRawState[i];
+    compartmentClosed[i] = (reedStableState[i] == REED_CLOSED_STATE[i]);
+    previousOpen[i] = !compartmentClosed[i];
+    Serial.printf("[CuraSync] Bay %d reed GPIO %d initial=%s, closed-level=%s, mode=%s\n",
+                  i + 1, reedPins[i], reedStableState[i] == HIGH ? "HIGH" : "LOW",
+                  REED_CLOSED_STATE[i] == HIGH ? "HIGH" : "LOW",
+                  reedPinModes[i] == INPUT_PULLUP ? "INPUT_PULLUP" : "INPUT");
   }
 
   // Setup Buzzer pin
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
 
-  // Quick startup single beep self-test (clean, solid tone)
-  Serial.println("[CuraSync] Buzzer startup self-test...");
-  soundBuzzerOn();
-  delay(180);
-  soundBuzzerOff();
-
   // Initialize LCD display
   lcd.init();
   lcd.backlight();
+  lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("CuraSync Dispenser");
+  lcd.print("CuraSync Ready");
   lcd.setCursor(0, 1);
   lcd.print("Starting HW...");
 
   // Initialize DS3231 RTC
   if (!rtc.begin()) {
     Serial.println("[CuraSync] WARNING: DS3231 RTC Module not detected. Check I2C wiring (SDA=21, SCL=22).");
-    lcd.clear();
-    lcd.print("RTC Not Found!");
+    lcd.setCursor(0, 0);
+    lcd.print("RTC Not Found!   ");
   }
 
-  // Connect to Wi-Fi
+  // Start Wi-Fi asynchronously so reed sensing and local alarms remain active
+  // while the access point connects or retries.
   lcd.setCursor(0, 1);
-  lcd.print("Connecting WiFi ");
+  lcd.print("Starting WiFi... ");
   connectWiFi();
-
-  // If connected, sync exact time and fetch schedule
-  if (WiFi.status() == WL_CONNECTED) {
-    lcd.setCursor(0, 1);
-    lcd.print("Syncing Time... ");
-    syncTimeWithNTP();
-
-    lcd.setCursor(0, 1);
-    lcd.print("Syncing Schedule");
-    fetchScheduleFromCuraSync();
-    sendKeepalivePing();
-  } else {
-    lcd.setCursor(0, 1);
-    lcd.print("Offline Mode    ");
-  }
-
-  delay(1000);
-  lcd.clear();
+  lastKeepalivePing = millis();
+  lastScheduleSync = millis();
+  lastNtpCheck = millis();
 }
 
 // -------------------------------------------------------------
 // MAIN LOOP
 // -------------------------------------------------------------
 void loop() {
+  // Keep reconnect attempts asynchronous; local sensing and alarms continue
+  // while Wi-Fi retries in the background.
+  connectWiFi();
+
   DateTime now = rtc.now();
 
   // Safe fallback: If hardware RTC year is invalid (< 2024), use internal ESP32 clock
@@ -560,70 +709,128 @@ void loop() {
   // 1. Check Compartment Reed Switches & Alarms
   for (int i = 0; i < 3; i++) {
     int reedState = digitalRead(reedPins[i]);
-    bool isOpen = (reedState == OPEN_STATE);
+    if (reedState != reedRawState[i]) {
+      reedRawState[i] = reedState;
+      reedRawChangedAt[i] = currentMillis;
+      Serial.printf("[CuraSync] Bay %d reed GPIO %d raw transition -> %s\n",
+                    i + 1, reedPins[i], reedState == HIGH ? "HIGH" : "LOW");
+    }
+    if (reedState != reedStableState[i] &&
+        currentMillis - reedRawChangedAt[i] >= REED_DEBOUNCE_MS) {
+      reedStableState[i] = reedState;
+      Serial.printf("[CuraSync] Bay %d reed GPIO %d stable -> %s\n",
+                    i + 1, reedPins[i], reedState == HIGH ? "HIGH" : "LOW");
+    }
+
+    bool isClosed = (reedStableState[i] == REED_CLOSED_STATE[i]);
+    bool isOpen = !isClosed;
+    compartmentClosed[i] = isClosed;
 
     bool justOpened = isOpen && !previousOpen[i];
 
     if (justOpened) {
-      Serial.printf("[CuraSync] Lid opened: Compartment %d (Reed LOW)\n", i + 1);
+      Serial.printf("[CuraSync] Lid opened: Bay %d (GPIO %d=%s)\n",
+                    i + 1, reedPins[i], reedStableState[i] == HIGH ? "HIGH" : "LOW");
 
-      // Report event to CuraSync server
-      reportCompartmentEvent(i + 1);
-
-      // 1. Immediately silence buzzer on lid opening
-      stopBuzzer();
-
-      // 2. Clear pending dose alarm and blinking LED
+      // Silence this bay's reminder before the network request, which can
+      // take time on a slow connection.
+      if (buzzerActive && (buzzerCompartment == i || buzzerCompartment == -1)) {
+        stopBuzzer();
+      }
       pending[i] = false;
       firstBuzzPending[i] = false;
       ledBlinking[i] = false;
 
-      // 3. If a general alert was active, clear all blinking LEDs
-      if (buzzerCompartment == -1 || buzzerCompartment == i) {
-        ledBlinking[0] = false;
-        ledBlinking[1] = false;
-        ledBlinking[2] = false;
-      }
-
-      // 4. Showcase dose confirmation on LCD for 4 seconds
       customMessageActive = true;
       customMessageStart = millis();
       customMessageDuration = 4000UL;
       snprintf(customLine1, sizeof(customLine1), "%-16s", "DOSE TAKEN! OK ");
       snprintf(customLine2, sizeof(customLine2), "C%d:%-13s", i + 1, alarmMedName[i]);
+      digitalWrite(ledPins[i], LOW);
+      lcd.setCursor(0, 0);
+      lcd.print(customLine1);
+      lcd.setCursor(0, 1);
+      lcd.print(customLine2);
+
+      // Send the event after local buzzer/LED/LCD state has already changed.
+      unsentOpenEvent[i] = true;
+      lastOpenEventAttempt[i] = millis();
+      if (reportCompartmentEvent(i + 1)) unsentOpenEvent[i] = false;
     }
 
-    // CONTINUOUS SAFETY: While reed switch sends LOW (lid is open),
-    // ensure alarm is silenced and pending state is cleared
+    // The debounced justOpened edge above silences the matching buzzer and
+    // clears its alert LED. Keep a stale/already-open input from cancelling a
+    // newly dispatched manual alert on every loop iteration.
     if (isOpen) {
-      if (buzzerActive && (buzzerCompartment == i || buzzerCompartment == -1)) {
-        stopBuzzer();
-      }
       pending[i] = false;
-      ledBlinking[i] = false;
+      firstBuzzPending[i] = false;
     }
 
     previousOpen[i] = isOpen;
+  }
 
-    // Trigger scheduled alarms
-    if (alarmActive[i]) {
+  // 1B. Check Scheduled Alarms (Multiple Doses per Bay supported)
+  if (totalActiveSchedules > 0) {
+    for (int s = 0; s < totalActiveSchedules; s++) {
+      if (!activeSchedules[s].active) continue;
+
+      int compIdx = activeSchedules[s].compartment - 1;
+      if (compIdx < 0 || compIdx >= 3) continue;
+
       bool alreadyTriggered =
-        lastAlarmDay[i] == now.day() &&
-        lastAlarmMonth[i] == now.month() &&
-        lastAlarmYear[i] == now.year();
+        lastAlarmDay[compIdx] == now.day() &&
+        lastAlarmMonth[compIdx] == now.month() &&
+        lastAlarmYear[compIdx] == now.year() &&
+        lastAlarmHour[compIdx] == now.hour() &&
+        lastAlarmMinute[compIdx] == now.minute();
 
-      if (!alreadyTriggered &&
-          now.hour() == alarmHour[i] &&
-          now.minute() == alarmMinute[i]) {
+      if (compartmentClosed[compIdx] && !alreadyTriggered &&
+          now.hour() == activeSchedules[s].hour &&
+          now.minute() == activeSchedules[s].minute) {
 
-        lastAlarmDay[i] = now.day();
-        lastAlarmMonth[i] = now.month();
-        lastAlarmYear[i] = now.year();
+        lastAlarmDay[compIdx] = now.day();
+        lastAlarmMonth[compIdx] = now.month();
+        lastAlarmYear[compIdx] = now.year();
+        lastAlarmHour[compIdx] = now.hour();
+        lastAlarmMinute[compIdx] = now.minute();
 
-        pending[i] = true;
-        firstBuzzPending[i] = true;
-        Serial.printf("[CuraSync] >>> ALARM ACTIVE for Compartment %d (%02d:%02d) <<<\n",
-                      i + 1, alarmHour[i], alarmMinute[i]);
+        strncpy(alarmMedName[compIdx], activeSchedules[s].name, 16);
+        alarmMedName[compIdx][16] = '\0';
+
+        pending[compIdx] = true;
+        firstBuzzPending[compIdx] = true;
+
+        Serial.printf("[CuraSync] >>> ALARM ACTIVE for Bay %d at %02d:%02d: %s <<<\n",
+                      compIdx + 1, activeSchedules[s].hour, activeSchedules[s].minute,
+                      activeSchedules[s].name);
+      }
+    }
+  } else {
+    // Fallback: check 3 primary alarms
+    for (int i = 0; i < 3; i++) {
+      if (alarmActive[i]) {
+        bool alreadyTriggered =
+          lastAlarmDay[i] == now.day() &&
+          lastAlarmMonth[i] == now.month() &&
+          lastAlarmYear[i] == now.year() &&
+          lastAlarmHour[i] == now.hour() &&
+          lastAlarmMinute[i] == now.minute();
+
+        if (compartmentClosed[i] && !alreadyTriggered &&
+            now.hour() == alarmHour[i] &&
+            now.minute() == alarmMinute[i]) {
+
+          lastAlarmDay[i] = now.day();
+          lastAlarmMonth[i] = now.month();
+          lastAlarmYear[i] = now.year();
+          lastAlarmHour[i] = now.hour();
+          lastAlarmMinute[i] = now.minute();
+
+          pending[i] = true;
+          firstBuzzPending[i] = true;
+          Serial.printf("[CuraSync] >>> ALARM ACTIVE for Bay %d (%02d:%02d) <<<\n",
+                        i + 1, alarmHour[i], alarmMinute[i]);
+        }
       }
     }
   }
@@ -676,7 +883,6 @@ void loop() {
         digitalWrite(ledPins[0], LOW);
         digitalWrite(ledPins[1], LOW);
         digitalWrite(ledPins[2], LOW);
-        lcd.clear();
       } else {
         char pad1[17];
         char pad2[17];
@@ -713,10 +919,19 @@ void loop() {
           lcd.print("Online [Synced] ");
         } else if (WiFi.status() == WL_CONNECTED) {
           char statusBuf[17];
-          if (lastHttpCode != 0) {
-            snprintf(statusBuf, sizeof(statusBuf), "Err HTTP:%-7d", lastHttpCode);
+          if (lastHttpCode < 0) {
+            // ESP32 HTTPClient internal error codes (negative = transport-level failure)
+            switch (lastHttpCode) {
+              case -1:  snprintf(statusBuf, sizeof(statusBuf), "Conn Refused    "); break;
+              case -2:  snprintf(statusBuf, sizeof(statusBuf), "Send Failed     "); break;
+              case -3:  snprintf(statusBuf, sizeof(statusBuf), "Not Connected   "); break;
+              case -4:  snprintf(statusBuf, sizeof(statusBuf), "Connection Lost "); break;
+              case -11: snprintf(statusBuf, sizeof(statusBuf), "Request Timeout "); break;
+              default:  snprintf(statusBuf, sizeof(statusBuf), "Net Err (%d)    ", lastHttpCode); break;
+            }
           } else {
-            snprintf(statusBuf, sizeof(statusBuf), "WiFi Conn (Wait)");
+            // Real HTTP status code (4xx / 5xx)
+            snprintf(statusBuf, sizeof(statusBuf), "HTTP Err %d     ", lastHttpCode);
           }
           lcd.print(statusBuf);
         } else {
@@ -731,18 +946,38 @@ void loop() {
     }
   }
 
-  // 5. Periodic Background Cloud Sync (Non-Blocking)
+  // Retry physical opening events after connectivity returns.
+  for (int i = 0; i < 3; i++) {
+    if (unsentOpenEvent[i] &&
+        currentMillis - lastOpenEventAttempt[i] >= EVENT_RETRY_INTERVAL) {
+      lastOpenEventAttempt[i] = currentMillis;
+      if (reportCompartmentEvent(i + 1)) unsentOpenEvent[i] = false;
+      break;
+    }
+  }
+
+  // 5. Periodic cloud sync (HTTP requests may briefly block on the server)
   if (currentMillis - lastKeepalivePing >= KEEPALIVE_INTERVAL) {
     lastKeepalivePing = currentMillis;
-    if (WiFi.status() != WL_CONNECTED) {
-      connectWiFi();
-    }
     sendKeepalivePing();
   }
 
   if (currentMillis - lastScheduleSync >= SCHEDULE_SYNC_INTERVAL) {
     lastScheduleSync = currentMillis;
     fetchScheduleFromCuraSync();
+  }
+
+  // 6. Periodic NTP -> DS3231 Re-sync (every 6 hours) to prevent RTC drift
+  if (WiFi.status() == WL_CONNECTED && ntpSyncPending &&
+      currentMillis - lastNtpCheck >= 30000UL) {
+    lastNtpCheck = currentMillis;
+    syncTimeWithNTP();
+  } else if (WiFi.status() == WL_CONNECTED && !ntpSyncPending &&
+             currentMillis - lastNtpSync >= NTP_SYNC_INTERVAL) {
+    Serial.println("[CuraSync] Periodic NTP re-sync: checking DS3231 RTC drift...");
+    ntpConfigured = false;
+    lastNtpCheck = currentMillis;
+    syncTimeWithNTP();
   }
 
   delay(20);

@@ -38,21 +38,32 @@ export async function POST(req: NextRequest) {
     const now = new Date();
     const nowISO = now.toISOString();
 
-    // 2. Update device heartbeat
-    await supabase
-      .from("devices")
-      .update({ last_heartbeat_at: nowISO })
-      .eq("id", device.id);
+    // Updating the heartbeat and recording the event are independent writes.
+    const [heartbeatUpdate, eventInsert] = await Promise.all([
+      supabase
+        .from("devices")
+        .update({ last_heartbeat_at: nowISO })
+        .eq("id", device.id),
+      supabase.from("device_events").insert({
+        device_id: device.id,
+        patient_id: device.patient_id,
+        event_type: eventType || "compartment_open",
+        compartment_number: compartmentNumber || null,
+        event_time: nowISO,
+        raw_payload: body,
+      }),
+    ]);
+    if (heartbeatUpdate.error) {
+      console.error("Failed to update device heartbeat:", heartbeatUpdate.error.message);
+    }
 
-    // 3. Log event into device_events
-    await supabase.from("device_events").insert({
-      device_id: device.id,
-      patient_id: device.patient_id,
-      event_type: eventType || "compartment_open",
-      compartment_number: compartmentNumber || null,
-      event_time: nowISO,
-      raw_payload: body,
-    });
+    const eventInsertError = eventInsert.error;
+    if (eventInsertError) {
+      return NextResponse.json(
+        { error: `Failed to record device event: ${eventInsertError.message}` },
+        { status: 500 }
+      );
+    }
 
     let doseAcknowledged = false;
     let doseId: string | null = null;
@@ -72,7 +83,7 @@ export async function POST(req: NextRequest) {
         .eq("is_active", true);
 
       if (schedules && schedules.length > 0) {
-        const scheduleIds = (schedules as any[]).map((s: any) => s.id);
+        const scheduleIds = (schedules as { id: string }[]).map(({ id }) => id);
 
         // Find earliest pending or scheduled dose occurrence for today
         const { data: pendingDoses } = await supabase

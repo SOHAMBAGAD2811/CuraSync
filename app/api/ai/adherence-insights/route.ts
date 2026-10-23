@@ -152,7 +152,7 @@ ${Object.entries(bayStats).map(([bay, stats]) => {
 Device events: ${deviceEvents?.length || 0} total (last 30 days)
 `;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
     const prompt = `You are CuraSync's Predictive Adherence AI. Analyze this patient's medication adherence data and generate actionable insights.
 

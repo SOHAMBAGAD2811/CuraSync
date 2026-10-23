@@ -105,10 +105,7 @@ export function AdherenceInsights() {
     setLoading(false);
   }, [user?.id]);
 
-  useEffect(() => {
-    fetchInsights();
-  }, [fetchInsights]);
-
+  // Gemini API feature: Only triggers when the user clicks the Generate/Refresh button
   const riskLevel = data?.riskLevel || "low";
   const riskConfig = RISK_CONFIG[riskLevel];
   const adherenceRate = stats?.adherenceRate || data?.riskScore || 0;
@@ -138,16 +135,46 @@ export function AdherenceInsights() {
             <p className="text-xs text-slate-500">Intelligent 30-day adherence patterns and delay prevention</p>
           </div>
         </div>
-        <button
-          onClick={fetchInsights}
-          disabled={loading}
-          id="refresh-adherence-insights"
-          className="p-2 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer disabled:opacity-50"
-          title="Refresh insights"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
+        {data && (
+          <button
+            onClick={fetchInsights}
+            disabled={loading}
+            id="refresh-adherence-insights"
+            className="p-2 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer disabled:opacity-50"
+            title="Refresh insights"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        )}
       </div>
+
+      {!data && !loading && !error && (
+        <div className="bg-gradient-to-br from-slate-50 to-sky-50/50 rounded-2xl border border-slate-200/90 p-6 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-2xs">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-sky-100 flex items-center justify-center flex-shrink-0 text-sky-600">
+              <Brain className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">
+                Generate 30-Day Adherence Insights
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Analyze dose history, calculate risk metrics, and generate clinical timing recommendations with Gemini.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={fetchInsights}
+            disabled={loading}
+            id="generate-adherence-insights-btn"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-sky-600 to-teal-600 hover:from-sky-700 hover:to-teal-700 text-white text-xs font-semibold shadow-xs transition-all flex-shrink-0 cursor-pointer disabled:opacity-50"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Generate Insights</span>
+          </button>
+        </div>
+      )}
 
       {loading && !data && (
         <div className="bg-white rounded-2xl border border-slate-200 p-8 flex flex-col items-center gap-3 shadow-2xs">
@@ -160,8 +187,14 @@ export function AdherenceInsights() {
       )}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
-          {error}
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700 flex items-center justify-between">
+          <span>{error}</span>
+          <button
+            onClick={fetchInsights}
+            className="text-xs font-semibold underline hover:no-underline ml-3"
+          >
+            Retry
+          </button>
         </div>
       )}
 

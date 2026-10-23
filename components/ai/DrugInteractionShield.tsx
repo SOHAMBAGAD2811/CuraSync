@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Sparkles,
+  RefreshCw,
 } from "lucide-react";
 
 interface Medicine {
@@ -109,11 +110,17 @@ const RISK_SHIELD = {
   },
 };
 
+const READY_CONFIG = {
+  icon: Shield,
+  color: "text-sky-700",
+  bg: "border-sky-200/80 bg-gradient-to-br from-sky-50/60 to-slate-50/70",
+  label: "Interaction Check Ready",
+};
+
 export function DrugInteractionShield({ medicines }: Props) {
   const [data, setData] = useState<InteractionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [lastCheckedMeds, setLastCheckedMeds] = useState<string>("");
   const [rateLimitError, setRateLimitError] = useState<string | null>(null);
 
   const checkInteractions = useCallback(async () => {
@@ -122,9 +129,6 @@ export function DrugInteractionShield({ medicines }: Props) {
       setRateLimitError(null);
       return;
     }
-
-    const medKey = medicines.map((m) => `${m.name}:${m.dosage}`).join("|");
-    if (medKey === lastCheckedMeds) return;
 
     setLoading(true);
     setRateLimitError(null);
@@ -142,7 +146,6 @@ export function DrugInteractionShield({ medicines }: Props) {
       }
       if (result.success && result.data) {
         setData(result.data);
-        setLastCheckedMeds(medKey);
         // Auto-expand if there are interactions
         if (!result.data.safe && result.data.interactions?.length > 0) {
           setExpanded(true);
@@ -150,18 +153,11 @@ export function DrugInteractionShield({ medicines }: Props) {
       }
     } catch {}
     setLoading(false);
-  }, [medicines, lastCheckedMeds]);
-
-  useEffect(() => {
-    if (medicines.length >= 2) {
-      const timer = setTimeout(checkInteractions, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [medicines, checkInteractions]);
+  }, [medicines]);
 
   if (medicines.length < 2) return null;
 
-  const riskConfig = data ? RISK_SHIELD[data.overallRisk] || RISK_SHIELD.safe : RISK_SHIELD.safe;
+  const riskConfig = data ? RISK_SHIELD[data.overallRisk] || RISK_SHIELD.safe : READY_CONFIG;
   const RiskIcon = riskConfig.icon;
 
   return (
@@ -177,7 +173,9 @@ export function DrugInteractionShield({ medicines }: Props) {
               ? "bg-sky-100 text-sky-600"
               : data && !data.safe
               ? "bg-amber-100 text-amber-700"
-              : "bg-emerald-100 text-emerald-700"
+              : data && data.safe
+              ? "bg-emerald-100 text-emerald-700"
+              : "bg-sky-100 text-sky-700"
           }`}
         >
           {loading ? (
@@ -202,7 +200,7 @@ export function DrugInteractionShield({ medicines }: Props) {
               ⏳ {rateLimitError}
             </p>
           ) : loading ? (
-            <p className="text-xs text-slate-500 mt-0.5">Analyzing {medicines.length} medications...</p>
+            <p className="text-xs text-slate-500 mt-0.5">Analyzing {medicines.length} medications with Gemini AI...</p>
           ) : data ? (
             <p className={`text-xs font-semibold mt-0.5 ${riskConfig.color}`}>
               {data.overallRisk === "safe" || data.safe
@@ -211,28 +209,45 @@ export function DrugInteractionShield({ medicines }: Props) {
             </p>
           ) : (
             <p className="text-xs text-slate-500 mt-0.5">
-              Checking {medicines.length} medications for interactions...
+              Multi-drug interaction analysis ready for {medicines.length} active prescriptions.
             </p>
           )}
         </div>
 
-        {data && data.interactions.length > 0 && (
+        {!data && !loading && (
           <button
-            onClick={() => setExpanded((v) => !v)}
-            className="p-1.5 rounded-lg hover:bg-white/80 transition-colors text-slate-500 hover:text-slate-800 flex-shrink-0 cursor-pointer"
-            title={expanded ? "Collapse details" : "Expand details"}
+            type="button"
+            onClick={checkInteractions}
+            id="run-drug-interaction-check"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold shadow-xs transition-all flex-shrink-0 cursor-pointer"
           >
-            {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Check Interactions</span>
           </button>
         )}
 
-        {!loading && medicines.length >= 2 && (
-          <button
-            onClick={() => { setLastCheckedMeds(""); checkInteractions(); }}
-            className="text-[11px] font-semibold text-slate-600 hover:text-sky-700 px-2.5 py-1 rounded-lg border border-slate-200/80 bg-white/80 hover:bg-white transition-colors flex-shrink-0 cursor-pointer shadow-2xs"
-          >
-            Re-check
-          </button>
+        {data && !loading && (
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {data.interactions && data.interactions.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="p-1.5 rounded-lg hover:bg-white/80 transition-colors text-slate-500 hover:text-slate-800 cursor-pointer"
+                title={expanded ? "Collapse details" : "Expand details"}
+              >
+                {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={checkInteractions}
+              id="recheck-drug-interactions"
+              className="flex items-center gap-1 text-[11px] font-semibold text-slate-700 hover:text-sky-700 px-2.5 py-1.5 rounded-lg border border-slate-200/80 bg-white/80 hover:bg-white transition-colors cursor-pointer shadow-2xs"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span>Re-check</span>
+            </button>
+          </div>
         )}
       </div>
 

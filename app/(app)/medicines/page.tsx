@@ -13,7 +13,6 @@ import {
   Radio,
   Cpu,
   Volume2,
-  Sparkles,
   Trash2,
   AlertTriangle,
 } from "lucide-react";
@@ -83,8 +82,12 @@ export default function MedicinesPage() {
   }, [user, supabase]);
 
   useEffect(() => {
-    fetchMedications();
-    setStartDate(new Date().toISOString().split("T")[0]);
+    const initTimer = window.setTimeout(() => {
+      void fetchMedications();
+      setStartDate(new Date().toISOString().split("T")[0]);
+    }, 0);
+
+    return () => window.clearTimeout(initTimer);
   }, [fetchMedications]);
 
   const handleToggleDay = (dayIndex: number) => {
@@ -335,6 +338,7 @@ export default function MedicinesPage() {
           line2,
           ring_buzzer: true,
           duration_sec: 15,
+          compartment_number: compNum,
         }),
       });
 
