@@ -85,6 +85,7 @@ const unsigned long REMINDER_INTERVAL = 60000UL;  // Re-buzz every 60s if not ta
 bool pending[3]          = {false, false, false};
 bool firstBuzzPending[3] = {false, false, false};
 bool previousOpen[3]     = {false, false, false};
+bool ledBlinking[3]      = {false, false, false};
 
 bool buzzerActive = false;
 unsigned long buzzerStart = 0;
@@ -411,6 +412,27 @@ void sendKeepalivePing() {
       lcd.setCursor(0, 1);
       lcd.print(pad2);
 
+      // Parse compartment targeting to blink matching LED during alert
+      String combined = String(l1) + " " + String(l2);
+      combined.toUpperCase();
+
+      bool b1 = (combined.indexOf("BAY 1") >= 0) || (combined.indexOf("C1") >= 0) || (combined.indexOf("COMPARTMENT 1") >= 0);
+      bool b2 = (combined.indexOf("BAY 2") >= 0) || (combined.indexOf("C2") >= 0) || (combined.indexOf("COMPARTMENT 2") >= 0);
+      bool b3 = (combined.indexOf("BAY 3") >= 0) || (combined.indexOf("C3") >= 0) || (combined.indexOf("COMPARTMENT 3") >= 0);
+
+      if (b1 || b2 || b3) {
+        ledBlinking[0] = b1;
+        ledBlinking[1] = b2;
+        ledBlinking[2] = b3;
+        buzzerCompartment = b1 ? 0 : (b2 ? 1 : 2);
+      } else {
+        // General alert -> blink all LEDs
+        ledBlinking[0] = true;
+        ledBlinking[1] = true;
+        ledBlinking[2] = true;
+        buzzerCompartment = -1;
+      }
+
       // Trigger buzzer if requested
       if (ringBuzzer) {
         buzzerActive = true;
@@ -543,26 +565,42 @@ void loop() {
     bool justOpened = isOpen && !previousOpen[i];
 
     if (justOpened) {
-      Serial.printf("[CuraSync] Lid opened: Compartment %d\n", i + 1);
+      Serial.printf("[CuraSync] Lid opened: Compartment %d (Reed LOW)\n", i + 1);
 
       // Report event to CuraSync server
       reportCompartmentEvent(i + 1);
 
-      if (pending[i]) {
-        pending[i] = false;
-        firstBuzzPending[i] = false;
+      // 1. Immediately silence buzzer on lid opening
+      stopBuzzer();
 
-        if (buzzerActive && buzzerCompartment == i) {
-          stopBuzzer();
-        }
+      // 2. Clear pending dose alarm and blinking LED
+      pending[i] = false;
+      firstBuzzPending[i] = false;
+      ledBlinking[i] = false;
 
-        // Showcase dose confirmation on LCD for 4 seconds
-        customMessageActive = true;
-        customMessageStart = millis();
-        customMessageDuration = 4000UL;
-        snprintf(customLine1, sizeof(customLine1), "%-16s", "DOSE TAKEN! OK ");
-        snprintf(customLine2, sizeof(customLine2), "C%d:%-13s", i + 1, alarmMedName[i]);
+      // 3. If a general alert was active, clear all blinking LEDs
+      if (buzzerCompartment == -1 || buzzerCompartment == i) {
+        ledBlinking[0] = false;
+        ledBlinking[1] = false;
+        ledBlinking[2] = false;
       }
+
+      // 4. Showcase dose confirmation on LCD for 4 seconds
+      customMessageActive = true;
+      customMessageStart = millis();
+      customMessageDuration = 4000UL;
+      snprintf(customLine1, sizeof(customLine1), "%-16s", "DOSE TAKEN! OK ");
+      snprintf(customLine2, sizeof(customLine2), "C%d:%-13s", i + 1, alarmMedName[i]);
+    }
+
+    // CONTINUOUS SAFETY: While reed switch sends LOW (lid is open),
+    // ensure alarm is silenced and pending state is cleared
+    if (isOpen) {
+      if (buzzerActive && (buzzerCompartment == i || buzzerCompartment == -1)) {
+        stopBuzzer();
+      }
+      pending[i] = false;
+      ledBlinking[i] = false;
     }
 
     previousOpen[i] = isOpen;
@@ -588,9 +626,15 @@ void loop() {
                       i + 1, alarmHour[i], alarmMinute[i]);
       }
     }
+  }
 
-    // Compartment LED glows when dose is pending
-    digitalWrite(ledPins[i], pending[i] ? HIGH : LOW);
+  // Blinking LED Alert Driver:
+  // Compartment LEDs blink rapidly (200ms ON / 200ms OFF) during active alarms and alerts!
+  bool blinkCycle = (currentMillis % 400) < 200;
+  for (int k = 0; k < 3; k++) {
+    bool isAlerting = pending[k] || (customMessageActive && ledBlinking[k]);
+    bool ledState = isAlerting && blinkCycle;
+    digitalWrite(ledPins[k], ledState ? HIGH : LOW);
   }
 
   // 2. Manage Buzzer Duration & High-Volume Siren Modulation
@@ -626,6 +670,12 @@ void loop() {
     if (customMessageActive) {
       if (currentMillis - customMessageStart >= customMessageDuration) {
         customMessageActive = false;
+        ledBlinking[0] = false;
+        ledBlinking[1] = false;
+        ledBlinking[2] = false;
+        digitalWrite(ledPins[0], LOW);
+        digitalWrite(ledPins[1], LOW);
+        digitalWrite(ledPins[2], LOW);
         lcd.clear();
       } else {
         char pad1[17];
